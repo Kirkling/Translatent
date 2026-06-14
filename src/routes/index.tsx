@@ -800,6 +800,11 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .btn-primary { background: var(--ink); color: var(--paper); font-weight: 700; font-size: 13px; letter-spacing: 0.4px; text-transform: uppercase; padding: 12px; transition: background .15s; }
 .btn-primary:hover:not(:disabled) { background: var(--accent); }
 .btn-primary:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
+.btn-primary.stop { background: var(--accent); }
+.btn-primary.stop:hover { background: #a3321e; }
+.download-link { display: block; text-align: center; padding: 11px 12px; background: var(--ok); color: var(--paper); text-decoration: none; font-weight: 700; font-size: 13px; letter-spacing: 0.4px; text-transform: uppercase; border-radius: 4px; font-family: 'JetBrains Mono', monospace; word-break: break-all; }
+.download-link:hover { background: #2f5d3b; }
+.single-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .btn-secondary { background: transparent; border: 1px solid var(--ink); color: var(--ink); font-weight: 600; font-size: 12px; padding: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
 .btn-secondary:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
 .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
