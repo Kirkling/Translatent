@@ -765,6 +765,34 @@ function Index() {
           </div>
 
           <div className={`viewer${expanded ? " expanded" : ""}`}>
+            <div
+              className="drag-handle"
+              title="Drag up to expand, drag down to shrink"
+              onPointerDown={(e) => {
+                dragStartY.current = e.clientY;
+                dragMoved.current = false;
+                (e.currentTarget as Element).setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (dragStartY.current == null) return;
+                const dy = dragStartY.current - e.clientY;
+                if (Math.abs(dy) > 8) dragMoved.current = true;
+                if (dy > 60 && !expanded) setExpanded(true);
+                else if (dy < -60 && expanded) setExpanded(false);
+              }}
+              onPointerUp={(e) => {
+                const wasDrag = dragMoved.current;
+                dragStartY.current = null;
+                dragMoved.current = false;
+                try {
+                  (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+                } catch {/* noop */}
+                // Tap-to-toggle when there was no drag motion
+                if (!wasDrag) setExpanded((v) => !v);
+              }}
+            >
+              <span className="grip" />
+            </div>
             {!pages.length && (
               <div className="empty-state">
                 <div className="glyph">字</div>
@@ -786,12 +814,14 @@ function Index() {
                     aria-label={`Open page ${i + 1}`}
                     onClick={() => {
                       setCurrentIndex(i);
-                      setView("single");
+                      setLightboxTranslated(true);
+                      setLightboxIndex(i);
                     }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         setCurrentIndex(i);
-                        setView("single");
+                        setLightboxTranslated(true);
+                        setLightboxIndex(i);
                       }
                     }}
                   >
@@ -845,17 +875,68 @@ function Index() {
                   >
                     Translate This Page
                   </button>
-                  <button
-                    className="btn-secondary"
-                    onClick={() => setExpanded((v) => !v)}
-                    title="Toggle full-height view (Esc to exit)"
-                  >
-                    {expanded ? "Shrink" : "Expand"}
-                  </button>
                 </div>
               </div>
             )}
           </div>
+
+          {lightboxIndex !== null && pages[lightboxIndex] && (() => {
+            const lp = pages[lightboxIndex];
+            const lpHasT = lp.status === "translated" && lp.regions.length > 0;
+            return (
+              <div
+                className="lightbox"
+                role="dialog"
+                aria-modal="true"
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) setLightboxIndex(null);
+                }}
+              >
+                <div className="lightbox-bar">
+                  <button
+                    className="lb-btn"
+                    onClick={() => setLightboxIndex(null)}
+                    aria-label="Close"
+                  >
+                    ← Back
+                  </button>
+                  <span className="lb-count">
+                    {lightboxIndex + 1} / {pages.length}
+                  </span>
+                  <button
+                    className="lb-btn"
+                    disabled={!lpHasT}
+                    onClick={() => setLightboxTranslated((v) => !v)}
+                  >
+                    {lpHasT ? (lightboxTranslated ? "Original" : "Translated") : "No translation"}
+                  </button>
+                </div>
+                <button
+                  className="lb-nav prev"
+                  aria-label="Previous"
+                  disabled={lightboxIndex === 0}
+                  onClick={() => setLightboxIndex((i) => (i === null ? null : Math.max(0, i - 1)))}
+                >
+                  ‹
+                </button>
+                <div className="lb-stage">
+                  <canvas ref={lightboxCanvasRef} />
+                </div>
+                <button
+                  className="lb-nav next"
+                  aria-label="Next"
+                  disabled={lightboxIndex === pages.length - 1}
+                  onClick={() =>
+                    setLightboxIndex((i) =>
+                      i === null ? null : Math.min(pages.length - 1, i + 1),
+                    )
+                  }
+                >
+                  ›
+                </button>
+              </div>
+            );
+          })()}
 
           {log.length > 0 && (
             <div className="log" ref={logRef}>
