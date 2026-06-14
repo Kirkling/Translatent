@@ -310,23 +310,18 @@ function Index() {
       const page = pages[i];
       updatePage(i, { status: "processing" });
       try {
-        if (skipBlank) {
-          const { hasText } = await callServer(page, "presence");
-          if (!hasText) {
-            updatePage(i, { status: "skipped" });
-            appendLog(`Page ${i + 1}: no text detected — copied through untouched.`, "skip-line");
-            done++;
-            setProgress((done / total) * 100);
-            continue;
-          }
-        }
         const { regions } = await callServer(page, "detect");
         const safe = regions || [];
-        updatePage(i, { status: "translated", regions: safe });
-        appendLog(
-          `Page ${i + 1}: ${safe.length} text region${safe.length === 1 ? "" : "s"} translated.`,
-          "ok-line",
-        );
+        if (skipBlank && safe.length === 0) {
+          updatePage(i, { status: "skipped" });
+          appendLog(`Page ${i + 1}: no text detected — copied through untouched.`, "skip-line");
+        } else {
+          updatePage(i, { status: "translated", regions: safe });
+          appendLog(
+            `Page ${i + 1}: ${safe.length} text region${safe.length === 1 ? "" : "s"} translated.`,
+            "ok-line",
+          );
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         updatePage(i, { status: "skipped" });
@@ -334,6 +329,8 @@ function Index() {
       }
       done++;
       setProgress((done / total) * 100);
+      // small pacing delay to avoid bursting the AI gateway
+      await new Promise((r) => setTimeout(r, 400));
     }
 
     setRunning(false);
