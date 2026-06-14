@@ -96,33 +96,62 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const { x, y, w, h, translated, bg } = r;
   ctx.save();
-  ctx.fillStyle = bg || "#FFFFFF";
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = "#000000";
-  ctx.textBaseline = "top";
-  const padding = Math.max(2, Math.min(w, h) * 0.06);
-  const maxWidth = w - padding * 2;
-  const maxHeight = h - padding * 2;
-  let fontSize = Math.max(10, Math.floor(h * 0.22));
-  let lines: string[] = [];
+  // Rounded mask matched to bubble color
+  const radius = Math.max(2, Math.min(w, h) * 0.12);
+  const fill = bg || "#FFFFFF";
+  ctx.fillStyle = fill;
+  if (typeof ctx.roundRect === "function") {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, radius);
+    ctx.fill();
+  } else {
+    ctx.fillRect(x, y, w, h);
+  }
+  // Pick ink color based on background luminance
+  const ink = pickInk(fill);
+  ctx.fillStyle = ink;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const padX = Math.max(4, w * 0.08);
+  const padY = Math.max(3, h * 0.1);
+  const maxWidth = w - padX * 2;
+  const maxHeight = h - padY * 2;
   const family = `'Inter', 'Helvetica Neue', Arial, sans-serif`;
-  for (; fontSize >= 8; fontSize -= 1) {
+  // Fit text by trying decreasing sizes
+  let fontSize = Math.min(
+    Math.floor(h * 0.42),
+    Math.max(11, Math.floor(Math.sqrt((w * h) / Math.max(6, translated.length)) * 0.95)),
+  );
+  let lines: string[] = [];
+  const lineGap = 1.2;
+  for (; fontSize >= 9; fontSize -= 1) {
     ctx.font = `600 ${fontSize}px ${family}`;
     lines = wrapText(ctx, translated, maxWidth);
-    const totalHeight = lines.length * fontSize * 1.18;
-    if (totalHeight <= maxHeight || fontSize === 8) break;
+    const totalHeight = lines.length * fontSize * lineGap;
+    const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
+    if (totalHeight <= maxHeight && widest <= maxWidth) break;
+    if (fontSize === 9) break;
   }
   ctx.font = `600 ${fontSize}px ${family}`;
-  ctx.textAlign = "center";
-  const lineHeight = fontSize * 1.18;
-  const totalTextHeight = lines.length * lineHeight;
-  let ty = y + padding + Math.max(0, (maxHeight - totalTextHeight) / 2);
-  const tx = x + w / 2;
-  for (const line of lines) {
-    ctx.fillText(line, tx, ty, maxWidth);
-    ty += lineHeight;
+  const lineHeight = fontSize * lineGap;
+  const totalTextHeight = (lines.length - 1) * lineHeight + fontSize;
+  const cy = y + h / 2 - totalTextHeight / 2 + fontSize / 2;
+  const cx = x + w / 2;
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], cx, cy + i * lineHeight, maxWidth);
   }
   ctx.restore();
+}
+
+function pickInk(hex: string) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return "#111111";
+  const v = parseInt(m[1], 16);
+  const r = (v >> 16) & 0xff;
+  const g = (v >> 8) & 0xff;
+  const b = v & 0xff;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.55 ? "#111111" : "#F7F4ED";
 }
 
 function Index() {
@@ -137,6 +166,9 @@ function Index() {
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<LogLine[]>([]);
   const [drag, setDrag] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadName, setDownloadName] = useState<string>("");
+  const [building, setBuilding] = useState(false);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -148,6 +180,7 @@ function Index() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const stopRef = useRef(false);
 
   const appendLog = useCallback((text: string, cls?: LogLine["cls"]) => {
     setLog((prev) => [...prev, { text, cls }]);
@@ -263,7 +296,12 @@ function Index() {
   );
 
   const downloadCBZ = useCallback(async () => {
-    if (!pages.length) return;
+    if (!pages.length || building) return;
+    setBuilding(true);
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
+    }
     appendLog("Building translated CBZ…");
     const zip = new JSZip();
     for (let i = 0; i < pages.length; i++) {
@@ -286,18 +324,33 @@ function Index() {
     }
     const out = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(out);
-    const a = document.createElement("a");
     const baseName = (fileLabel?.name || "translated.cbz").replace(/\.[^.]+$/, "");
-    a.href = url;
-    a.download = `${baseName}.translated.cbz`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    appendLog("Download ready.", "ok-line");
-  }, [pages, fileLabel, appendLog]);
+    const name = `${baseName}.translated.cbz`;
+    setDownloadUrl(url);
+    setDownloadName(name);
+    setBuilding(false);
+    appendLog("Download ready — click the link below.", "ok-line");
+  }, [pages, fileLabel, appendLog, building, downloadUrl]);
 
-  const runTranslation = useCallback(async () => {
-    if (running || !pages.length) return;
+  useEffect(() => {
+    return () => {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    };
+  }, [downloadUrl]);
+
+  // Invalidate any prepared download when pages change
+  useEffect(() => {
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages]);
+
+  const translateRange = useCallback(async (indices: number[]) => {
+    if (running || !pages.length || !indices.length) return;
     setRunning(true);
+    stopRef.current = false;
     setStatusText("Translating pages…");
     setStatusMode("busy");
     setProgress(0);
@@ -311,8 +364,12 @@ function Index() {
     };
 
     let done = 0;
-    const total = pages.length;
-    for (let i = 0; i < total; i++) {
+    const total = indices.length;
+    for (const i of indices) {
+      if (stopRef.current) {
+        appendLog("Stopped by user.", "accent-line");
+        break;
+      }
       const page = pages[i];
       updatePage(i, { status: "processing" });
       try {
@@ -335,16 +392,31 @@ function Index() {
       }
       done++;
       setProgress((done / total) * 100);
-      // small pacing delay to avoid bursting the AI gateway
-      await new Promise((r) => setTimeout(r, 400));
+      // pacing delay — keeps us well under the AI gateway burst limit
+      if (!stopRef.current && done < total) {
+        await new Promise((r) => setTimeout(r, 1200));
+      }
     }
 
     setRunning(false);
-    setStatusText("Translation complete");
-    setStatusMode("done");
+    setStatusText(stopRef.current ? "Stopped" : "Translation complete");
+    setStatusMode(stopRef.current ? "" : "done");
     setProgress(100);
-    appendLog("Done.", "ok-line");
+    if (!stopRef.current) appendLog("Done.", "ok-line");
+    stopRef.current = false;
   }, [pages, running, skipBlank, callServer, appendLog]);
+
+  const runTranslation = useCallback(
+    () => translateRange(pages.map((_, i) => i)),
+    [translateRange, pages],
+  );
+  const translateCurrent = useCallback(
+    () => translateRange([currentIndex]),
+    [translateRange, currentIndex],
+  );
+  const stopTranslation = useCallback(() => {
+    stopRef.current = true;
+  }, []);
 
   const current = pages[currentIndex];
   const hasTranslation = !!current && current.status === "translated" && current.regions.length > 0;
@@ -488,20 +560,35 @@ function Index() {
           </div>
 
           <div className="actions">
-            <button
-              className="btn-primary"
-              disabled={!pages.length || running}
-              onClick={runTranslation}
-            >
-              {running ? "Translating…" : "Translate Pages"}
-            </button>
+            {running ? (
+              <button className="btn-primary stop" onClick={stopTranslation}>
+                Stop Translating
+              </button>
+            ) : (
+              <button
+                className="btn-primary"
+                disabled={!pages.length}
+                onClick={runTranslation}
+              >
+                Translate All Pages
+              </button>
+            )}
             <button
               className="btn-secondary"
-              disabled={!translatedCount}
+              disabled={!translatedCount || running || building}
               onClick={downloadCBZ}
             >
-              Download Translated CBZ
+              {building ? "Building…" : downloadUrl ? "Rebuild CBZ" : "Build Translated CBZ"}
             </button>
+            {downloadUrl && (
+              <a
+                className="download-link"
+                href={downloadUrl}
+                download={downloadName}
+              >
+                ↓ Download {downloadName}
+              </a>
+            )}
           </div>
         </aside>
 
@@ -599,13 +686,22 @@ function Index() {
                 <div className="canvas-wrap">
                   <canvas ref={canvasRef} />
                 </div>
-                <button
-                  className="btn-secondary"
-                  disabled={!hasTranslation}
-                  onClick={() => setShowTranslated((v) => !v)}
-                >
-                  {showTranslated ? "Show Original" : "Show Translated"}
-                </button>
+                <div className="single-actions">
+                  <button
+                    className="btn-secondary"
+                    disabled={!hasTranslation}
+                    onClick={() => setShowTranslated((v) => !v)}
+                  >
+                    {showTranslated ? "Show Original" : "Show Translated"}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    disabled={running}
+                    onClick={translateCurrent}
+                  >
+                    Translate This Page
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -704,6 +800,11 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .btn-primary { background: var(--ink); color: var(--paper); font-weight: 700; font-size: 13px; letter-spacing: 0.4px; text-transform: uppercase; padding: 12px; transition: background .15s; }
 .btn-primary:hover:not(:disabled) { background: var(--accent); }
 .btn-primary:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
+.btn-primary.stop { background: var(--accent); }
+.btn-primary.stop:hover { background: #a3321e; }
+.download-link { display: block; text-align: center; padding: 11px 12px; background: var(--ok); color: var(--paper); text-decoration: none; font-weight: 700; font-size: 13px; letter-spacing: 0.4px; text-transform: uppercase; border-radius: 4px; font-family: 'JetBrains Mono', monospace; word-break: break-all; }
+.download-link:hover { background: #2f5d3b; }
+.single-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .btn-secondary { background: transparent; border: 1px solid var(--ink); color: var(--ink); font-weight: 600; font-size: 12px; padding: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
 .btn-secondary:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
 .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }

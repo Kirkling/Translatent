@@ -28,7 +28,7 @@ function json(body: unknown, status = 200) {
 async function callGateway(messages: unknown[]) {
   const key = process.env.LOVABLE_API_KEY;
   if (!key) throw new Error("LOVABLE_API_KEY missing");
-  const maxAttempts = 3;
+  const maxAttempts = 5;
   let lastErr = "";
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -51,9 +51,11 @@ async function callGateway(messages: unknown[]) {
     if (res.status === 402) throw new Error("AI credits exhausted for this workspace.");
     if (res.status === 429 || res.status === 503) {
       const retryAfter = Number(res.headers.get("retry-after"));
-      const capped = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 5) * 1000 : 800 * Math.pow(2, attempt);
-      const base = Math.min(capped, 4000);
-      const jitter = Math.floor(Math.random() * 300);
+      const capped = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter, 8) * 1000
+        : 1000 * Math.pow(2, attempt);
+      const base = Math.min(capped, 8000);
+      const jitter = Math.floor(Math.random() * 500);
       await new Promise((r) => setTimeout(r, base + jitter));
       continue;
     }
