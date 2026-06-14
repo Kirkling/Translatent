@@ -954,6 +954,9 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .single-page-nav button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
 .canvas-wrap { position: relative; max-width: 100%; box-shadow: 0 4px 24px rgba(26,26,31,0.15); line-height: 0; }
 .canvas-wrap canvas { max-width: 100%; max-height: 78vh; display: block; }
+.single-page.expanded .canvas-wrap canvas { max-height: 92vh; }
+.viewer.expanded { padding: 8px; }
+.single-page.expanded .compare-label { display: none; }
 .compare-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
 .log { margin: 12px 24px 18px; background: var(--ink); color: #C9C5BA; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.7; border-radius: 4px; padding: 10px 14px; max-height: 110px; overflow-y: auto; flex-shrink: 0; }
 .log .accent-line { color: #E8825E; }
