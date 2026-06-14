@@ -275,12 +275,37 @@ function Index() {
         }
         // revoke old
         pages.forEach((p) => URL.revokeObjectURL(p.url));
+        // restore any saved translations for this file
+        let restored = 0;
+        try {
+          const key = `koebox:${file.name}:${loaded.length}`;
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const snap = JSON.parse(raw) as Record<
+              string,
+              { status: PageStatus; regions: Region[] }
+            >;
+            for (const p of loaded) {
+              const s = snap[p.name];
+              if (s && (s.status === "translated" || s.status === "skipped")) {
+                p.status = s.status;
+                p.regions = s.regions || [];
+                if (s.status === "translated") restored++;
+              }
+            }
+          }
+        } catch {
+          /* ignore corrupt cache */
+        }
         setPages(loaded);
         setCurrentIndex(0);
+        setRemaining([]);
         setFileLabel({ name: file.name, count: loaded.length });
         setStatusText(`${loaded.length} pages loaded`);
         setStatusMode("done");
         appendLog(`Loaded ${loaded.length} pages.`, "ok-line");
+        if (restored)
+          appendLog(`Restored ${restored} previously translated page${restored === 1 ? "" : "s"}.`, "ok-line");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         appendLog(`Failed to read archive: ${msg}`, "accent-line");
