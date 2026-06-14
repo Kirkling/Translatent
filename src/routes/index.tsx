@@ -249,7 +249,13 @@ function Index() {
       fd.append("noFlag", String(noFlag));
       fd.append("textOnly", String(textOnly));
       const res = await fetch("/api/translate", { method: "POST", body: fd });
-      const data = (await res.json()) as { error?: string; hasText?: boolean; regions?: Region[] };
+      const text = await res.text();
+      let data: { error?: string; hasText?: boolean; regions?: Region[] } = {};
+      try {
+        data = JSON.parse(text) as typeof data;
+      } catch {
+        throw new Error(`Server returned a non-JSON response (HTTP ${res.status}). The request likely timed out — try again.`);
+      }
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
     },
