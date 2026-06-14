@@ -28,25 +28,37 @@ function json(body: unknown, status = 200) {
 async function callGateway(messages: unknown[]) {
   const key = process.env.LOVABLE_API_KEY;
   if (!key) throw new Error("LOVABLE_API_KEY missing");
-  const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Lovable-API-Key": key,
-    },
-    body: JSON.stringify({
-      model: "google/gemini-3-flash-preview",
-      messages,
-    }),
-  });
-  if (!res.ok) {
+  const maxAttempts = 5;
+  let lastErr = "";
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Lovable-API-Key": key,
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages,
+      }),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      return data.choices?.[0]?.message?.content ?? "";
+    }
     const text = await res.text();
-    if (res.status === 429) throw new Error("Rate limited — wait a moment and retry.");
+    lastErr = `${res.status}: ${text.slice(0, 200)}`;
     if (res.status === 402) throw new Error("AI credits exhausted for this workspace.");
-    throw new Error(`AI gateway error ${res.status}: ${text.slice(0, 200)}`);
+    if (res.status === 429 || res.status === 503) {
+      const retryAfter = Number(res.headers.get("retry-after"));
+      const base = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1500 * Math.pow(2, attempt);
+      const jitter = Math.floor(Math.random() * 500);
+      await new Promise((r) => setTimeout(r, base + jitter));
+      continue;
+    }
+    throw new Error(`AI gateway error ${lastErr}`);
   }
-  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  return data.choices?.[0]?.message?.content ?? "";
+  throw new Error(`Rate limited after retries — try again in a minute. (${lastErr})`);
 }
 
 function parseRegions(raw: string, maxW: number, maxH: number) {
