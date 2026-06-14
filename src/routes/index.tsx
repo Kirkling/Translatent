@@ -179,6 +179,8 @@ function Index() {
   const [building, setBuilding] = useState(false);
   const [remaining, setRemaining] = useState<number[]>([]);
   const [expanded, setExpanded] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightboxTranslated, setLightboxTranslated] = useState(true);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -189,8 +191,11 @@ function Index() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lightboxCanvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const pauseRef = useRef(false);
+  const dragStartY = useRef<number | null>(null);
+  const dragMoved = useRef(false);
 
   const appendLog = useCallback((text: string, cls?: LogLine["cls"]) => {
     setLog((prev) => [...prev, { text, cls }]);
@@ -221,10 +226,18 @@ function Index() {
 
   // ---- keyboard navigation when on single-page view
   useEffect(() => {
-    if (view !== "single") return;
+    if (view !== "single" && lightboxIndex === null) return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
+      if (lightboxIndex !== null) {
+        if (e.key === "ArrowLeft")
+          setLightboxIndex((i) => (i === null ? null : Math.max(0, i - 1)));
+        else if (e.key === "ArrowRight")
+          setLightboxIndex((i) => (i === null ? null : Math.min(pages.length - 1, i + 1)));
+        else if (e.key === "Escape") setLightboxIndex(null);
+        return;
+      }
       if (e.key === "ArrowLeft") setCurrentIndex((i) => Math.max(0, i - 1));
       else if (e.key === "ArrowRight")
         setCurrentIndex((i) => Math.min(pages.length - 1, i + 1));
@@ -236,7 +249,7 @@ function Index() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, pages.length, expanded]);
+  }, [view, pages.length, expanded, lightboxIndex]);
 
   // cleanup object URLs on unmount
   useEffect(() => {
@@ -340,6 +353,23 @@ function Index() {
       for (const r of p.regions) drawTextBox(ctx, r);
     }
   }, [view, currentIndex, pages, showTranslated]);
+
+  // Draw lightbox canvas when open / page changes
+  useEffect(() => {
+    if (lightboxIndex === null) return;
+    const p = pages[lightboxIndex];
+    const canvas = lightboxCanvasRef.current;
+    if (!p || !canvas) return;
+    canvas.width = p.w;
+    canvas.height = p.h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(p.img, 0, 0, p.w, p.h);
+    const hasT = p.status === "translated" && p.regions.length > 0;
+    if (hasT && lightboxTranslated) {
+      for (const r of p.regions) drawTextBox(ctx, r);
+    }
+  }, [lightboxIndex, pages, lightboxTranslated]);
 
   const callServer = useCallback(
     async (page: Page, kind: "presence" | "detect") => {
