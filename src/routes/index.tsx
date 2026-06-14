@@ -552,7 +552,7 @@ function Index() {
   return (
     <>
       <style>{CSS}</style>
-      <div className="app">
+      <div className={`app${expanded ? " expanded" : ""}`}>
         <aside className="sidebar">
           <div className="brand">
             <div className="mark">
