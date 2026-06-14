@@ -726,7 +726,7 @@ function Index() {
             </div>
           </div>
 
-          <div className="viewer">
+          <div className={`viewer${expanded ? " expanded" : ""}`}>
             {!pages.length && (
               <div className="empty-state">
                 <div className="glyph">字</div>
@@ -766,7 +766,7 @@ function Index() {
             )}
 
             {pages.length > 0 && view === "single" && current && (
-              <div className="single-page">
+              <div className={`single-page${expanded ? " expanded" : ""}`}>
                 <div className="single-page-nav">
                   <button
                     aria-label="Previous page"
@@ -806,6 +806,13 @@ function Index() {
                     onClick={translateCurrent}
                   >
                     Translate This Page
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setExpanded((v) => !v)}
+                    title="Toggle full-height view (Esc to exit)"
+                  >
+                    {expanded ? "Shrink" : "Expand"}
                   </button>
                 </div>
               </div>
