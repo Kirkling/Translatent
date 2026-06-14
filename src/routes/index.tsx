@@ -587,16 +587,33 @@ function Index() {
 
           <div className="actions">
             {running ? (
-              <button className="btn-primary stop" onClick={stopTranslation}>
-                Stop Translating
+              <button className="btn-primary stop" onClick={pauseTranslation}>
+                Pause Translating
               </button>
+            ) : remaining.length > 0 ? (
+              <>
+                <button className="btn-primary" onClick={resumeTranslation}>
+                  Resume ({remaining.length} left)
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => {
+                    setRemaining([]);
+                    appendLog("Cleared pending queue.");
+                  }}
+                >
+                  Cancel Queue
+                </button>
+              </>
             ) : (
               <button
                 className="btn-primary"
                 disabled={!pages.length}
                 onClick={runTranslation}
               >
-                Translate All Pages
+                {pages.some((p) => p.status === "translated")
+                  ? "Translate Remaining"
+                  : "Translate All Pages"}
               </button>
             )}
             <button
