@@ -169,6 +169,8 @@ function Index() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadName, setDownloadName] = useState<string>("");
   const [building, setBuilding] = useState(false);
+  const [remaining, setRemaining] = useState<number[]>([]);
+  const [expanded, setExpanded] = useState(false);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -180,7 +182,7 @@ function Index() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
-  const stopRef = useRef(false);
+  const pauseRef = useRef(false);
 
   const appendLog = useCallback((text: string, cls?: LogLine["cls"]) => {
     setLog((prev) => [...prev, { text, cls }]);
@@ -189,6 +191,44 @@ function Index() {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
+
+  // ---- persistence: save translated regions per file so an accidental
+  // refresh / crash doesn't lose work. Key derived from filename + count.
+  const storageKey = fileLabel ? `koebox:${fileLabel.name}:${fileLabel.count}` : null;
+
+  useEffect(() => {
+    if (!storageKey || !pages.length) return;
+    const snap: Record<string, { status: PageStatus; regions: Region[] }> = {};
+    for (const p of pages) {
+      if (p.status === "translated" || p.status === "skipped") {
+        snap[p.name] = { status: p.status, regions: p.regions };
+      }
+    }
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(snap));
+    } catch {
+      /* quota — ignore */
+    }
+  }, [pages, storageKey]);
+
+  // ---- keyboard navigation when on single-page view
+  useEffect(() => {
+    if (view !== "single") return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
+      if (e.key === "ArrowLeft") setCurrentIndex((i) => Math.max(0, i - 1));
+      else if (e.key === "ArrowRight")
+        setCurrentIndex((i) => Math.min(pages.length - 1, i + 1));
+      else if (e.key === "Escape" && expanded) setExpanded(false);
+      else if (e.key.toLowerCase() === "t") {
+        setShowTranslated((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, pages.length, expanded]);
 
   // cleanup object URLs on unmount
   useEffect(() => {
@@ -235,12 +275,37 @@ function Index() {
         }
         // revoke old
         pages.forEach((p) => URL.revokeObjectURL(p.url));
+        // restore any saved translations for this file
+        let restored = 0;
+        try {
+          const key = `koebox:${file.name}:${loaded.length}`;
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const snap = JSON.parse(raw) as Record<
+              string,
+              { status: PageStatus; regions: Region[] }
+            >;
+            for (const p of loaded) {
+              const s = snap[p.name];
+              if (s && (s.status === "translated" || s.status === "skipped")) {
+                p.status = s.status;
+                p.regions = s.regions || [];
+                if (s.status === "translated") restored++;
+              }
+            }
+          }
+        } catch {
+          /* ignore corrupt cache */
+        }
         setPages(loaded);
         setCurrentIndex(0);
+        setRemaining([]);
         setFileLabel({ name: file.name, count: loaded.length });
         setStatusText(`${loaded.length} pages loaded`);
         setStatusMode("done");
         appendLog(`Loaded ${loaded.length} pages.`, "ok-line");
+        if (restored)
+          appendLog(`Restored ${restored} previously translated page${restored === 1 ? "" : "s"}.`, "ok-line");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         appendLog(`Failed to read archive: ${msg}`, "accent-line");
@@ -350,7 +415,8 @@ function Index() {
   const translateRange = useCallback(async (indices: number[]) => {
     if (running || !pages.length || !indices.length) return;
     setRunning(true);
-    stopRef.current = false;
+    pauseRef.current = false;
+    setRemaining(indices.slice());
     setStatusText("Translating pages…");
     setStatusMode("busy");
     setProgress(0);
@@ -365,9 +431,12 @@ function Index() {
 
     let done = 0;
     const total = indices.length;
-    for (const i of indices) {
-      if (stopRef.current) {
-        appendLog("Stopped by user.", "accent-line");
+    let leftover = indices.slice();
+    for (let idx = 0; idx < indices.length; idx++) {
+      const i = indices[idx];
+      if (pauseRef.current) {
+        leftover = indices.slice(idx);
+        appendLog(`Paused — ${leftover.length} page${leftover.length === 1 ? "" : "s"} remaining.`, "accent-line");
         break;
       }
       const page = pages[i];
@@ -387,35 +456,55 @@ function Index() {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        updatePage(i, { status: "skipped" });
+        // On error: keep page as pending so resume can retry it,
+        // and auto-pause if it looks like a rate / timeout issue.
+        updatePage(i, { status: "pending" });
         appendLog(`Page ${i + 1}: ${msg}`, "accent-line");
+        if (/rate|429|timed out|timeout|non-JSON/i.test(msg)) {
+          leftover = indices.slice(idx);
+          appendLog(`Auto-paused at page ${i + 1} — click Resume to continue.`, "accent-line");
+          pauseRef.current = true;
+          break;
+        }
       }
       done++;
       setProgress((done / total) * 100);
-      // pacing delay — keeps us well under the AI gateway burst limit
-      if (!stopRef.current && done < total) {
-        await new Promise((r) => setTimeout(r, 1200));
+      // pacing delay — slower to stay well below burst limits over long runs
+      if (!pauseRef.current && done < total) {
+        await new Promise((r) => setTimeout(r, 2500));
       }
     }
 
+    const wasPaused = pauseRef.current;
     setRunning(false);
-    setStatusText(stopRef.current ? "Stopped" : "Translation complete");
-    setStatusMode(stopRef.current ? "" : "done");
-    setProgress(100);
-    if (!stopRef.current) appendLog("Done.", "ok-line");
-    stopRef.current = false;
+    if (wasPaused) {
+      setRemaining(leftover);
+      setStatusText(`Paused — ${leftover.length} left`);
+      setStatusMode("");
+    } else {
+      setRemaining([]);
+      setStatusText("Translation complete");
+      setStatusMode("done");
+      setProgress(100);
+      appendLog("Done.", "ok-line");
+    }
+    pauseRef.current = false;
   }, [pages, running, skipBlank, callServer, appendLog]);
 
   const runTranslation = useCallback(
-    () => translateRange(pages.map((_, i) => i)),
+    () => translateRange(pages.map((_, i) => i).filter((i) => pages[i].status !== "translated")),
     [translateRange, pages],
+  );
+  const resumeTranslation = useCallback(
+    () => translateRange(remaining),
+    [translateRange, remaining],
   );
   const translateCurrent = useCallback(
     () => translateRange([currentIndex]),
     [translateRange, currentIndex],
   );
-  const stopTranslation = useCallback(() => {
-    stopRef.current = true;
+  const pauseTranslation = useCallback(() => {
+    pauseRef.current = true;
   }, []);
 
   const current = pages[currentIndex];
@@ -561,16 +650,33 @@ function Index() {
 
           <div className="actions">
             {running ? (
-              <button className="btn-primary stop" onClick={stopTranslation}>
-                Stop Translating
+              <button className="btn-primary stop" onClick={pauseTranslation}>
+                Pause Translating
               </button>
+            ) : remaining.length > 0 ? (
+              <>
+                <button className="btn-primary" onClick={resumeTranslation}>
+                  Resume ({remaining.length} left)
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => {
+                    setRemaining([]);
+                    appendLog("Cleared pending queue.");
+                  }}
+                >
+                  Cancel Queue
+                </button>
+              </>
             ) : (
               <button
                 className="btn-primary"
                 disabled={!pages.length}
                 onClick={runTranslation}
               >
-                Translate All Pages
+                {pages.some((p) => p.status === "translated")
+                  ? "Translate Remaining"
+                  : "Translate All Pages"}
               </button>
             )}
             <button
@@ -620,7 +726,7 @@ function Index() {
             </div>
           </div>
 
-          <div className="viewer">
+          <div className={`viewer${expanded ? " expanded" : ""}`}>
             {!pages.length && (
               <div className="empty-state">
                 <div className="glyph">字</div>
@@ -660,7 +766,7 @@ function Index() {
             )}
 
             {pages.length > 0 && view === "single" && current && (
-              <div className="single-page">
+              <div className={`single-page${expanded ? " expanded" : ""}`}>
                 <div className="single-page-nav">
                   <button
                     aria-label="Previous page"
@@ -700,6 +806,13 @@ function Index() {
                     onClick={translateCurrent}
                   >
                     Translate This Page
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setExpanded((v) => !v)}
+                    title="Toggle full-height view (Esc to exit)"
+                  >
+                    {expanded ? "Shrink" : "Expand"}
                   </button>
                 </div>
               </div>
@@ -841,6 +954,9 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .single-page-nav button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
 .canvas-wrap { position: relative; max-width: 100%; box-shadow: 0 4px 24px rgba(26,26,31,0.15); line-height: 0; }
 .canvas-wrap canvas { max-width: 100%; max-height: 78vh; display: block; }
+.single-page.expanded .canvas-wrap canvas { max-height: 92vh; }
+.viewer.expanded { padding: 8px; }
+.single-page.expanded .compare-label { display: none; }
 .compare-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
 .log { margin: 12px 24px 18px; background: var(--ink); color: #C9C5BA; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.7; border-radius: 4px; padding: 10px 14px; max-height: 110px; overflow-y: auto; flex-shrink: 0; }
 .log .accent-line { color: #E8825E; }
