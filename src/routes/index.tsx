@@ -560,20 +560,35 @@ function Index() {
           </div>
 
           <div className="actions">
-            <button
-              className="btn-primary"
-              disabled={!pages.length || running}
-              onClick={runTranslation}
-            >
-              {running ? "Translating…" : "Translate Pages"}
-            </button>
+            {running ? (
+              <button className="btn-primary stop" onClick={stopTranslation}>
+                Stop Translating
+              </button>
+            ) : (
+              <button
+                className="btn-primary"
+                disabled={!pages.length}
+                onClick={runTranslation}
+              >
+                Translate All Pages
+              </button>
+            )}
             <button
               className="btn-secondary"
-              disabled={!translatedCount}
+              disabled={!translatedCount || running || building}
               onClick={downloadCBZ}
             >
-              Download Translated CBZ
+              {building ? "Building…" : downloadUrl ? "Rebuild CBZ" : "Build Translated CBZ"}
             </button>
+            {downloadUrl && (
+              <a
+                className="download-link"
+                href={downloadUrl}
+                download={downloadName}
+              >
+                ↓ Download {downloadName}
+              </a>
+            )}
           </div>
         </aside>
 
@@ -671,13 +686,22 @@ function Index() {
                 <div className="canvas-wrap">
                   <canvas ref={canvasRef} />
                 </div>
-                <button
-                  className="btn-secondary"
-                  disabled={!hasTranslation}
-                  onClick={() => setShowTranslated((v) => !v)}
-                >
-                  {showTranslated ? "Show Original" : "Show Translated"}
-                </button>
+                <div className="single-actions">
+                  <button
+                    className="btn-secondary"
+                    disabled={!hasTranslation}
+                    onClick={() => setShowTranslated((v) => !v)}
+                  >
+                    {showTranslated ? "Show Original" : "Show Translated"}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    disabled={running}
+                    onClick={translateCurrent}
+                  >
+                    Translate This Page
+                  </button>
+                </div>
               </div>
             )}
           </div>
