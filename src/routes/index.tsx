@@ -96,16 +96,24 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const { x, y, w, h, translated, bg } = r;
   ctx.save();
-  // Rounded mask matched to bubble color
-  const radius = Math.max(2, Math.min(w, h) * 0.12);
+  // Inflate the mask slightly so the original glyphs (which usually bleed a
+  // few pixels past the model's bbox) are fully covered. Then draw a rounded
+  // rectangle in the sampled bubble color — this "redraws" the bubble fill
+  // instead of just overlaying text on top of the original characters.
+  const pad = Math.max(3, Math.min(w, h) * 0.08);
+  const bx = x - pad;
+  const by = y - pad;
+  const bw = w + pad * 2;
+  const bh = h + pad * 2;
+  const radius = Math.max(4, Math.min(bw, bh) * 0.22);
   const fill = bg || "#FFFFFF";
   ctx.fillStyle = fill;
   if (typeof ctx.roundRect === "function") {
     ctx.beginPath();
-    ctx.roundRect(x, y, w, h, radius);
+    ctx.roundRect(bx, by, bw, bh, radius);
     ctx.fill();
   } else {
-    ctx.fillRect(x, y, w, h);
+    ctx.fillRect(bx, by, bw, bh);
   }
   // Pick ink color based on background luminance
   const ink = pickInk(fill);
@@ -171,6 +179,8 @@ function Index() {
   const [building, setBuilding] = useState(false);
   const [remaining, setRemaining] = useState<number[]>([]);
   const [expanded, setExpanded] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightboxTranslated, setLightboxTranslated] = useState(true);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -181,8 +191,11 @@ function Index() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lightboxCanvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const pauseRef = useRef(false);
+  const dragStartY = useRef<number | null>(null);
+  const dragMoved = useRef(false);
 
   const appendLog = useCallback((text: string, cls?: LogLine["cls"]) => {
     setLog((prev) => [...prev, { text, cls }]);
@@ -213,10 +226,18 @@ function Index() {
 
   // ---- keyboard navigation when on single-page view
   useEffect(() => {
-    if (view !== "single") return;
+    if (view !== "single" && lightboxIndex === null) return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
+      if (lightboxIndex !== null) {
+        if (e.key === "ArrowLeft")
+          setLightboxIndex((i) => (i === null ? null : Math.max(0, i - 1)));
+        else if (e.key === "ArrowRight")
+          setLightboxIndex((i) => (i === null ? null : Math.min(pages.length - 1, i + 1)));
+        else if (e.key === "Escape") setLightboxIndex(null);
+        return;
+      }
       if (e.key === "ArrowLeft") setCurrentIndex((i) => Math.max(0, i - 1));
       else if (e.key === "ArrowRight")
         setCurrentIndex((i) => Math.min(pages.length - 1, i + 1));
@@ -228,7 +249,7 @@ function Index() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, pages.length, expanded]);
+  }, [view, pages.length, expanded, lightboxIndex]);
 
   // cleanup object URLs on unmount
   useEffect(() => {
@@ -332,6 +353,23 @@ function Index() {
       for (const r of p.regions) drawTextBox(ctx, r);
     }
   }, [view, currentIndex, pages, showTranslated]);
+
+  // Draw lightbox canvas when open / page changes
+  useEffect(() => {
+    if (lightboxIndex === null) return;
+    const p = pages[lightboxIndex];
+    const canvas = lightboxCanvasRef.current;
+    if (!p || !canvas) return;
+    canvas.width = p.w;
+    canvas.height = p.h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(p.img, 0, 0, p.w, p.h);
+    const hasT = p.status === "translated" && p.regions.length > 0;
+    if (hasT && lightboxTranslated) {
+      for (const r of p.regions) drawTextBox(ctx, r);
+    }
+  }, [lightboxIndex, pages, lightboxTranslated]);
 
   const callServer = useCallback(
     async (page: Page, kind: "presence" | "detect") => {
@@ -514,7 +552,7 @@ function Index() {
   return (
     <>
       <style>{CSS}</style>
-      <div className="app">
+      <div className={`app${expanded ? " expanded" : ""}`}>
         <aside className="sidebar">
           <div className="brand">
             <div className="mark">
@@ -727,6 +765,34 @@ function Index() {
           </div>
 
           <div className={`viewer${expanded ? " expanded" : ""}`}>
+            <div
+              className="drag-handle"
+              title="Drag up to expand, drag down to shrink"
+              onPointerDown={(e) => {
+                dragStartY.current = e.clientY;
+                dragMoved.current = false;
+                (e.currentTarget as Element).setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (dragStartY.current == null) return;
+                const dy = dragStartY.current - e.clientY;
+                if (Math.abs(dy) > 8) dragMoved.current = true;
+                if (dy > 60 && !expanded) setExpanded(true);
+                else if (dy < -60 && expanded) setExpanded(false);
+              }}
+              onPointerUp={(e) => {
+                const wasDrag = dragMoved.current;
+                dragStartY.current = null;
+                dragMoved.current = false;
+                try {
+                  (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+                } catch {/* noop */}
+                // Tap-to-toggle when there was no drag motion
+                if (!wasDrag) setExpanded((v) => !v);
+              }}
+            >
+              <span className="grip" />
+            </div>
             {!pages.length && (
               <div className="empty-state">
                 <div className="glyph">字</div>
@@ -748,12 +814,14 @@ function Index() {
                     aria-label={`Open page ${i + 1}`}
                     onClick={() => {
                       setCurrentIndex(i);
-                      setView("single");
+                      setLightboxTranslated(true);
+                      setLightboxIndex(i);
                     }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         setCurrentIndex(i);
-                        setView("single");
+                        setLightboxTranslated(true);
+                        setLightboxIndex(i);
                       }
                     }}
                   >
@@ -807,17 +875,68 @@ function Index() {
                   >
                     Translate This Page
                   </button>
-                  <button
-                    className="btn-secondary"
-                    onClick={() => setExpanded((v) => !v)}
-                    title="Toggle full-height view (Esc to exit)"
-                  >
-                    {expanded ? "Shrink" : "Expand"}
-                  </button>
                 </div>
               </div>
             )}
           </div>
+
+          {lightboxIndex !== null && pages[lightboxIndex] && (() => {
+            const lp = pages[lightboxIndex];
+            const lpHasT = lp.status === "translated" && lp.regions.length > 0;
+            return (
+              <div
+                className="lightbox"
+                role="dialog"
+                aria-modal="true"
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) setLightboxIndex(null);
+                }}
+              >
+                <div className="lightbox-bar">
+                  <button
+                    className="lb-btn"
+                    onClick={() => setLightboxIndex(null)}
+                    aria-label="Close"
+                  >
+                    ← Back
+                  </button>
+                  <span className="lb-count">
+                    {lightboxIndex + 1} / {pages.length}
+                  </span>
+                  <button
+                    className="lb-btn"
+                    disabled={!lpHasT}
+                    onClick={() => setLightboxTranslated((v) => !v)}
+                  >
+                    {lpHasT ? (lightboxTranslated ? "Original" : "Translated") : "No translation"}
+                  </button>
+                </div>
+                <button
+                  className="lb-nav prev"
+                  aria-label="Previous"
+                  disabled={lightboxIndex === 0}
+                  onClick={() => setLightboxIndex((i) => (i === null ? null : Math.max(0, i - 1)))}
+                >
+                  ‹
+                </button>
+                <div className="lb-stage">
+                  <canvas ref={lightboxCanvasRef} />
+                </div>
+                <button
+                  className="lb-nav next"
+                  aria-label="Next"
+                  disabled={lightboxIndex === pages.length - 1}
+                  onClick={() =>
+                    setLightboxIndex((i) =>
+                      i === null ? null : Math.min(pages.length - 1, i + 1),
+                    )
+                  }
+                >
+                  ›
+                </button>
+              </div>
+            );
+          })()}
 
           {log.length > 0 && (
             <div className="log" ref={logRef}>
@@ -935,6 +1054,27 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .progress-bar { height: 3px; background: var(--line); overflow: hidden; margin: 0 0 10px; }
 .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width .3s ease; }
 .viewer { flex: 1; overflow-y: auto; padding: 24px; }
+.viewer { position: relative; }
+.drag-handle { position: sticky; top: 0; z-index: 5; display: flex; justify-content: center; align-items: center; height: 18px; margin: -24px -24px 8px; cursor: ns-resize; background: linear-gradient(var(--paper), var(--paper) 70%, transparent); touch-action: none; user-select: none; }
+.drag-handle .grip { display: block; width: 44px; height: 4px; border-radius: 2px; background: var(--line); transition: background .15s; }
+.drag-handle:hover .grip { background: var(--accent); }
+.viewer.expanded .drag-handle { margin: -8px -8px 8px; }
+.app.expanded .sidebar { display: none; }
+.app.expanded .topbar { display: none; }
+.app.expanded .progress-wrap { display: none; }
+.lightbox { position: fixed; inset: 0; background: rgba(15,15,18,0.94); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 56px 56px 24px; }
+.lightbox-bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; background: rgba(0,0,0,0.4); color: var(--paper); }
+.lb-count { font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.5px; }
+.lb-btn { background: transparent; border: 1px solid rgba(247,244,237,0.4); color: var(--paper); font-family: 'Archivo Narrow', sans-serif; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; padding: 7px 14px; border-radius: 4px; cursor: pointer; }
+.lb-btn:hover:not(:disabled) { background: rgba(247,244,237,0.12); border-color: var(--paper); }
+.lb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.lb-stage { max-width: 100%; max-height: 100%; display: flex; align-items: center; justify-content: center; }
+.lb-stage canvas { max-width: 100%; max-height: calc(100vh - 100px); display: block; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
+.lb-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 64px; background: rgba(0,0,0,0.35); color: var(--paper); border: 1px solid rgba(247,244,237,0.2); font-size: 26px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.lb-nav:hover:not(:disabled) { background: rgba(0,0,0,0.6); }
+.lb-nav:disabled { opacity: 0.25; cursor: not-allowed; }
+.lb-nav.prev { left: 8px; }
+.lb-nav.next { right: 8px; }
 .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); gap: 8px; }
 .empty-state .glyph { font-family: 'Archivo Narrow', sans-serif; font-size: 64px; font-weight: 800; color: var(--panel); line-height: 1; }
 .empty-state .msg { font-size: 14px; max-width: 320px; line-height: 1.6; }
