@@ -166,6 +166,9 @@ function Index() {
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<LogLine[]>([]);
   const [drag, setDrag] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadName, setDownloadName] = useState<string>("");
+  const [building, setBuilding] = useState(false);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -177,6 +180,7 @@ function Index() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const stopRef = useRef(false);
 
   const appendLog = useCallback((text: string, cls?: LogLine["cls"]) => {
     setLog((prev) => [...prev, { text, cls }]);
@@ -292,7 +296,12 @@ function Index() {
   );
 
   const downloadCBZ = useCallback(async () => {
-    if (!pages.length) return;
+    if (!pages.length || building) return;
+    setBuilding(true);
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
+    }
     appendLog("Building translated CBZ…");
     const zip = new JSZip();
     for (let i = 0; i < pages.length; i++) {
@@ -315,18 +324,33 @@ function Index() {
     }
     const out = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(out);
-    const a = document.createElement("a");
     const baseName = (fileLabel?.name || "translated.cbz").replace(/\.[^.]+$/, "");
-    a.href = url;
-    a.download = `${baseName}.translated.cbz`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    appendLog("Download ready.", "ok-line");
-  }, [pages, fileLabel, appendLog]);
+    const name = `${baseName}.translated.cbz`;
+    setDownloadUrl(url);
+    setDownloadName(name);
+    setBuilding(false);
+    appendLog("Download ready — click the link below.", "ok-line");
+  }, [pages, fileLabel, appendLog, building, downloadUrl]);
 
-  const runTranslation = useCallback(async () => {
-    if (running || !pages.length) return;
+  useEffect(() => {
+    return () => {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    };
+  }, [downloadUrl]);
+
+  // Invalidate any prepared download when pages change
+  useEffect(() => {
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages]);
+
+  const translateRange = useCallback(async (indices: number[]) => {
+    if (running || !pages.length || !indices.length) return;
     setRunning(true);
+    stopRef.current = false;
     setStatusText("Translating pages…");
     setStatusMode("busy");
     setProgress(0);
@@ -340,8 +364,12 @@ function Index() {
     };
 
     let done = 0;
-    const total = pages.length;
-    for (let i = 0; i < total; i++) {
+    const total = indices.length;
+    for (const i of indices) {
+      if (stopRef.current) {
+        appendLog("Stopped by user.", "accent-line");
+        break;
+      }
       const page = pages[i];
       updatePage(i, { status: "processing" });
       try {
@@ -364,16 +392,31 @@ function Index() {
       }
       done++;
       setProgress((done / total) * 100);
-      // small pacing delay to avoid bursting the AI gateway
-      await new Promise((r) => setTimeout(r, 400));
+      // pacing delay — keeps us well under the AI gateway burst limit
+      if (!stopRef.current && done < total) {
+        await new Promise((r) => setTimeout(r, 1200));
+      }
     }
 
     setRunning(false);
-    setStatusText("Translation complete");
-    setStatusMode("done");
+    setStatusText(stopRef.current ? "Stopped" : "Translation complete");
+    setStatusMode(stopRef.current ? "" : "done");
     setProgress(100);
-    appendLog("Done.", "ok-line");
+    if (!stopRef.current) appendLog("Done.", "ok-line");
+    stopRef.current = false;
   }, [pages, running, skipBlank, callServer, appendLog]);
+
+  const runTranslation = useCallback(
+    () => translateRange(pages.map((_, i) => i)),
+    [translateRange, pages],
+  );
+  const translateCurrent = useCallback(
+    () => translateRange([currentIndex]),
+    [translateRange, currentIndex],
+  );
+  const stopTranslation = useCallback(() => {
+    stopRef.current = true;
+  }, []);
 
   const current = pages[currentIndex];
   const hasTranslation = !!current && current.status === "translated" && current.regions.length > 0;
