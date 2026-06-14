@@ -352,7 +352,8 @@ function Index() {
   const translateRange = useCallback(async (indices: number[]) => {
     if (running || !pages.length || !indices.length) return;
     setRunning(true);
-    stopRef.current = false;
+    pauseRef.current = false;
+    setRemaining(indices.slice());
     setStatusText("Translating pages…");
     setStatusMode("busy");
     setProgress(0);
@@ -367,9 +368,12 @@ function Index() {
 
     let done = 0;
     const total = indices.length;
-    for (const i of indices) {
-      if (stopRef.current) {
-        appendLog("Stopped by user.", "accent-line");
+    let leftover = indices.slice();
+    for (let idx = 0; idx < indices.length; idx++) {
+      const i = indices[idx];
+      if (pauseRef.current) {
+        leftover = indices.slice(idx);
+        appendLog(`Paused — ${leftover.length} page${leftover.length === 1 ? "" : "s"} remaining.`, "accent-line");
         break;
       }
       const page = pages[i];
@@ -389,35 +393,55 @@ function Index() {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        updatePage(i, { status: "skipped" });
+        // On error: keep page as pending so resume can retry it,
+        // and auto-pause if it looks like a rate / timeout issue.
+        updatePage(i, { status: "pending" });
         appendLog(`Page ${i + 1}: ${msg}`, "accent-line");
+        if (/rate|429|timed out|timeout|non-JSON/i.test(msg)) {
+          leftover = indices.slice(idx);
+          appendLog(`Auto-paused at page ${i + 1} — click Resume to continue.`, "accent-line");
+          pauseRef.current = true;
+          break;
+        }
       }
       done++;
       setProgress((done / total) * 100);
-      // pacing delay — keeps us well under the AI gateway burst limit
-      if (!stopRef.current && done < total) {
-        await new Promise((r) => setTimeout(r, 1200));
+      // pacing delay — slower to stay well below burst limits over long runs
+      if (!pauseRef.current && done < total) {
+        await new Promise((r) => setTimeout(r, 2500));
       }
     }
 
+    const wasPaused = pauseRef.current;
     setRunning(false);
-    setStatusText(stopRef.current ? "Stopped" : "Translation complete");
-    setStatusMode(stopRef.current ? "" : "done");
-    setProgress(100);
-    if (!stopRef.current) appendLog("Done.", "ok-line");
-    stopRef.current = false;
+    if (wasPaused) {
+      setRemaining(leftover);
+      setStatusText(`Paused — ${leftover.length} left`);
+      setStatusMode("");
+    } else {
+      setRemaining([]);
+      setStatusText("Translation complete");
+      setStatusMode("done");
+      setProgress(100);
+      appendLog("Done.", "ok-line");
+    }
+    pauseRef.current = false;
   }, [pages, running, skipBlank, callServer, appendLog]);
 
   const runTranslation = useCallback(
-    () => translateRange(pages.map((_, i) => i)),
+    () => translateRange(pages.map((_, i) => i).filter((i) => pages[i].status !== "translated")),
     [translateRange, pages],
+  );
+  const resumeTranslation = useCallback(
+    () => translateRange(remaining),
+    [translateRange, remaining],
   );
   const translateCurrent = useCallback(
     () => translateRange([currentIndex]),
     [translateRange, currentIndex],
   );
-  const stopTranslation = useCallback(() => {
-    stopRef.current = true;
+  const pauseTranslation = useCallback(() => {
+    pauseRef.current = true;
   }, []);
 
   const current = pages[currentIndex];
