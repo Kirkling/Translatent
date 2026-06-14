@@ -28,7 +28,7 @@ function json(body: unknown, status = 200) {
 async function callGateway(messages: unknown[]) {
   const key = process.env.LOVABLE_API_KEY;
   if (!key) throw new Error("LOVABLE_API_KEY missing");
-  const maxAttempts = 6;
+  const maxAttempts = 5;
   let lastErr = "";
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
