@@ -221,7 +221,7 @@ function Index() {
       else if (e.key === "ArrowRight")
         setCurrentIndex((i) => Math.min(pages.length - 1, i + 1));
       else if (e.key === "Escape" && expanded) setExpanded(false);
-      else if (e.key.toLowerCase() === "t" && current && hasTranslation) {
+      else if (e.key.toLowerCase() === "t") {
         setShowTranslated((v) => !v);
       }
     };
