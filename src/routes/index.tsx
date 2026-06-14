@@ -192,6 +192,44 @@ function Index() {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
 
+  // ---- persistence: save translated regions per file so an accidental
+  // refresh / crash doesn't lose work. Key derived from filename + count.
+  const storageKey = fileLabel ? `koebox:${fileLabel.name}:${fileLabel.count}` : null;
+
+  useEffect(() => {
+    if (!storageKey || !pages.length) return;
+    const snap: Record<string, { status: PageStatus; regions: Region[] }> = {};
+    for (const p of pages) {
+      if (p.status === "translated" || p.status === "skipped") {
+        snap[p.name] = { status: p.status, regions: p.regions };
+      }
+    }
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(snap));
+    } catch {
+      /* quota — ignore */
+    }
+  }, [pages, storageKey]);
+
+  // ---- keyboard navigation when on single-page view
+  useEffect(() => {
+    if (view !== "single") return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
+      if (e.key === "ArrowLeft") setCurrentIndex((i) => Math.max(0, i - 1));
+      else if (e.key === "ArrowRight")
+        setCurrentIndex((i) => Math.min(pages.length - 1, i + 1));
+      else if (e.key === "Escape" && expanded) setExpanded(false);
+      else if (e.key.toLowerCase() === "t" && current && hasTranslation) {
+        setShowTranslated((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, pages.length, expanded]);
+
   // cleanup object URLs on unmount
   useEffect(() => {
     return () => {
