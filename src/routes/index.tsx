@@ -96,16 +96,24 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const { x, y, w, h, translated, bg } = r;
   ctx.save();
-  // Rounded mask matched to bubble color
-  const radius = Math.max(2, Math.min(w, h) * 0.12);
+  // Inflate the mask slightly so the original glyphs (which usually bleed a
+  // few pixels past the model's bbox) are fully covered. Then draw a rounded
+  // rectangle in the sampled bubble color — this "redraws" the bubble fill
+  // instead of just overlaying text on top of the original characters.
+  const pad = Math.max(3, Math.min(w, h) * 0.08);
+  const bx = x - pad;
+  const by = y - pad;
+  const bw = w + pad * 2;
+  const bh = h + pad * 2;
+  const radius = Math.max(4, Math.min(bw, bh) * 0.22);
   const fill = bg || "#FFFFFF";
   ctx.fillStyle = fill;
   if (typeof ctx.roundRect === "function") {
     ctx.beginPath();
-    ctx.roundRect(x, y, w, h, radius);
+    ctx.roundRect(bx, by, bw, bh, radius);
     ctx.fill();
   } else {
-    ctx.fillRect(x, y, w, h);
+    ctx.fillRect(bx, by, bw, bh);
   }
   // Pick ink color based on background luminance
   const ink = pickInk(fill);
