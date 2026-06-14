@@ -169,6 +169,8 @@ function Index() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadName, setDownloadName] = useState<string>("");
   const [building, setBuilding] = useState(false);
+  const [remaining, setRemaining] = useState<number[]>([]);
+  const [expanded, setExpanded] = useState(false);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -180,7 +182,7 @@ function Index() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
-  const stopRef = useRef(false);
+  const pauseRef = useRef(false);
 
   const appendLog = useCallback((text: string, cls?: LogLine["cls"]) => {
     setLog((prev) => [...prev, { text, cls }]);
