@@ -96,33 +96,62 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const { x, y, w, h, translated, bg } = r;
   ctx.save();
-  ctx.fillStyle = bg || "#FFFFFF";
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = "#000000";
-  ctx.textBaseline = "top";
-  const padding = Math.max(2, Math.min(w, h) * 0.06);
-  const maxWidth = w - padding * 2;
-  const maxHeight = h - padding * 2;
-  let fontSize = Math.max(10, Math.floor(h * 0.22));
-  let lines: string[] = [];
+  // Rounded mask matched to bubble color
+  const radius = Math.max(2, Math.min(w, h) * 0.12);
+  const fill = bg || "#FFFFFF";
+  ctx.fillStyle = fill;
+  if (typeof ctx.roundRect === "function") {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, radius);
+    ctx.fill();
+  } else {
+    ctx.fillRect(x, y, w, h);
+  }
+  // Pick ink color based on background luminance
+  const ink = pickInk(fill);
+  ctx.fillStyle = ink;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const padX = Math.max(4, w * 0.08);
+  const padY = Math.max(3, h * 0.1);
+  const maxWidth = w - padX * 2;
+  const maxHeight = h - padY * 2;
   const family = `'Inter', 'Helvetica Neue', Arial, sans-serif`;
-  for (; fontSize >= 8; fontSize -= 1) {
+  // Fit text by trying decreasing sizes
+  let fontSize = Math.min(
+    Math.floor(h * 0.42),
+    Math.max(11, Math.floor(Math.sqrt((w * h) / Math.max(6, translated.length)) * 0.95)),
+  );
+  let lines: string[] = [];
+  const lineGap = 1.2;
+  for (; fontSize >= 9; fontSize -= 1) {
     ctx.font = `600 ${fontSize}px ${family}`;
     lines = wrapText(ctx, translated, maxWidth);
-    const totalHeight = lines.length * fontSize * 1.18;
-    if (totalHeight <= maxHeight || fontSize === 8) break;
+    const totalHeight = lines.length * fontSize * lineGap;
+    const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
+    if (totalHeight <= maxHeight && widest <= maxWidth) break;
+    if (fontSize === 9) break;
   }
   ctx.font = `600 ${fontSize}px ${family}`;
-  ctx.textAlign = "center";
-  const lineHeight = fontSize * 1.18;
-  const totalTextHeight = lines.length * lineHeight;
-  let ty = y + padding + Math.max(0, (maxHeight - totalTextHeight) / 2);
-  const tx = x + w / 2;
-  for (const line of lines) {
-    ctx.fillText(line, tx, ty, maxWidth);
-    ty += lineHeight;
+  const lineHeight = fontSize * lineGap;
+  const totalTextHeight = (lines.length - 1) * lineHeight + fontSize;
+  const cy = y + h / 2 - totalTextHeight / 2 + fontSize / 2;
+  const cx = x + w / 2;
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], cx, cy + i * lineHeight, maxWidth);
   }
   ctx.restore();
+}
+
+function pickInk(hex: string) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return "#111111";
+  const v = parseInt(m[1], 16);
+  const r = (v >> 16) & 0xff;
+  const g = (v >> 8) & 0xff;
+  const b = v & 0xff;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.55 ? "#111111" : "#F7F4ED";
 }
 
 function Index() {
