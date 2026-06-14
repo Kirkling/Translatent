@@ -185,7 +185,9 @@ export const Route = createFileRoute("/api/translate")({
           return json({ regions });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          return json({ error: msg }, 500);
+          // Return 200 with an error field so the client can show the message
+          // without tripping the global runtime-error boundary.
+          return json({ error: msg }, 200);
         }
       },
     },
