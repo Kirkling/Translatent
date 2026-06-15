@@ -941,13 +941,30 @@ function Index() {
                   <span className="lb-count">
                     {lightboxIndex + 1} / {pages.length}
                   </span>
-                  <button
-                    className="lb-btn"
-                    disabled={!lpHasT}
-                    onClick={() => setLightboxTranslated((v) => !v)}
-                  >
-                    {lpHasT ? (lightboxTranslated ? "Original" : "Translated") : "No translation"}
-                  </button>
+                  {lpHasT ? (
+                    <div className="lb-seg" role="tablist" aria-label="View">
+                      <button
+                        role="tab"
+                        aria-selected={!lightboxTranslated}
+                        className={!lightboxTranslated ? "active" : ""}
+                        onClick={() => setLightboxTranslated(false)}
+                      >
+                        Original
+                      </button>
+                      <button
+                        role="tab"
+                        aria-selected={lightboxTranslated}
+                        className={lightboxTranslated ? "active" : ""}
+                        onClick={() => setLightboxTranslated(true)}
+                      >
+                        Translated
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="lb-btn" aria-disabled="true" style={{ opacity: 0.5 }}>
+                      No translation
+                    </span>
+                  )}
                 </div>
                 <button
                   className="lb-nav prev"
@@ -957,8 +974,50 @@ function Index() {
                 >
                   ‹
                 </button>
-                <div className="lb-stage">
-                  <canvas ref={lightboxCanvasRef} />
+                <div
+                  className="lb-stage"
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    setLbZoom((z) => {
+                      const next = Math.max(1, Math.min(5, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+                      if (next === 1) setLbPan({ x: 0, y: 0 });
+                      return next;
+                    });
+                  }}
+                  onPointerDown={(e) => {
+                    // Double-tap to toggle zoom
+                    const now = Date.now();
+                    if (now - lbLastTap.current < 280) {
+                      setLbZoom((z) => (z > 1 ? 1 : 2.2));
+                      setLbPan({ x: 0, y: 0 });
+                      lbLastTap.current = 0;
+                      return;
+                    }
+                    lbLastTap.current = now;
+                    if (lbZoom > 1) {
+                      lbPanStart.current = { x: e.clientX, y: e.clientY, px: lbPan.x, py: lbPan.y };
+                      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                    }
+                  }}
+                  onPointerMove={(e) => {
+                    if (!lbPanStart.current) return;
+                    const dx = e.clientX - lbPanStart.current.x;
+                    const dy = e.clientY - lbPanStart.current.y;
+                    setLbPan({ x: lbPanStart.current.px + dx, y: lbPanStart.current.py + dy });
+                  }}
+                  onPointerUp={(e) => {
+                    lbPanStart.current = null;
+                    try { (e.currentTarget as Element).releasePointerCapture(e.pointerId); } catch {/* noop */}
+                  }}
+                >
+                  <canvas
+                    ref={lightboxCanvasRef}
+                    style={{
+                      transform: `translate(${lbPan.x}px, ${lbPan.y}px) scale(${lbZoom})`,
+                      cursor: lbZoom > 1 ? "grab" : "zoom-in",
+                      transition: lbPanStart.current ? "none" : "transform .12s ease",
+                    }}
+                  />
                 </div>
                 <button
                   className="lb-nav next"
@@ -972,6 +1031,35 @@ function Index() {
                 >
                   ›
                 </button>
+                <div className="lb-zoom">
+                  <button
+                    className="lb-btn"
+                    onClick={() => {
+                      setLbZoom((z) => Math.max(1, z / 1.4));
+                      if (lbZoom / 1.4 <= 1) setLbPan({ x: 0, y: 0 });
+                    }}
+                    aria-label="Zoom out"
+                  >
+                    −
+                  </button>
+                  <span className="lb-zoom-val">{Math.round(lbZoom * 100)}%</span>
+                  <button
+                    className="lb-btn"
+                    onClick={() => setLbZoom((z) => Math.min(5, z * 1.4))}
+                    aria-label="Zoom in"
+                  >
+                    +
+                  </button>
+                  <button
+                    className="lb-btn"
+                    onClick={() => {
+                      setLbZoom(1);
+                      setLbPan({ x: 0, y: 0 });
+                    }}
+                  >
+                    Reset
+                  </button>
+                </div>
               </div>
             );
           })()}
