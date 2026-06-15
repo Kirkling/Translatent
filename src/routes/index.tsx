@@ -181,6 +181,11 @@ function Index() {
   const [expanded, setExpanded] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxTranslated, setLightboxTranslated] = useState(true);
+  const [lbZoom, setLbZoom] = useState(1);
+  const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
+  const lbPanStart = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const lbPinchStart = useRef<{ dist: number; zoom: number } | null>(null);
+  const lbLastTap = useRef<number>(0);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -192,6 +197,12 @@ function Index() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lightboxCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Reset zoom whenever the lightbox image changes or closes
+  useEffect(() => {
+    setLbZoom(1);
+    setLbPan({ x: 0, y: 0 });
+  }, [lightboxIndex]);
+
   const logRef = useRef<HTMLDivElement>(null);
   const pauseRef = useRef(false);
   const dragStartY = useRef<number | null>(null);
@@ -432,7 +443,34 @@ function Index() {
     setDownloadUrl(url);
     setDownloadName(name);
     setBuilding(false);
-    appendLog("Download ready — click the link below.", "ok-line");
+    appendLog("Download ready — starting download…", "ok-line");
+    // Kick off the actual download. iOS Safari ignores <a download> on blob:
+    // URLs, so try Web Share API with a file first, then fall back to a
+    // programmatic anchor click.
+    try {
+      const file = new File([out], name, { type: "application/vnd.comicbook+zip" });
+      const nav = navigator as Navigator & {
+        canShare?: (data: { files?: File[] }) => boolean;
+        share?: (data: { files?: File[]; title?: string }) => Promise<void>;
+      };
+      if (nav.canShare && nav.share && nav.canShare({ files: [file] })) {
+        await nav.share({ files: [file], title: name });
+        appendLog("Shared via system sheet.", "ok-line");
+      } else {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+    } catch (err) {
+      appendLog(
+        `Auto-download blocked — tap the green link below. (${err instanceof Error ? err.message : String(err)})`,
+        "accent-line",
+      );
+    }
   }, [pages, fileLabel, appendLog, building, downloadUrl]);
 
   useEffect(() => {
@@ -903,13 +941,30 @@ function Index() {
                   <span className="lb-count">
                     {lightboxIndex + 1} / {pages.length}
                   </span>
-                  <button
-                    className="lb-btn"
-                    disabled={!lpHasT}
-                    onClick={() => setLightboxTranslated((v) => !v)}
-                  >
-                    {lpHasT ? (lightboxTranslated ? "Original" : "Translated") : "No translation"}
-                  </button>
+                  {lpHasT ? (
+                    <div className="lb-seg" role="tablist" aria-label="View">
+                      <button
+                        role="tab"
+                        aria-selected={!lightboxTranslated}
+                        className={!lightboxTranslated ? "active" : ""}
+                        onClick={() => setLightboxTranslated(false)}
+                      >
+                        Original
+                      </button>
+                      <button
+                        role="tab"
+                        aria-selected={lightboxTranslated}
+                        className={lightboxTranslated ? "active" : ""}
+                        onClick={() => setLightboxTranslated(true)}
+                      >
+                        Translated
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="lb-btn" aria-disabled="true" style={{ opacity: 0.5 }}>
+                      No translation
+                    </span>
+                  )}
                 </div>
                 <button
                   className="lb-nav prev"
@@ -919,8 +974,50 @@ function Index() {
                 >
                   ‹
                 </button>
-                <div className="lb-stage">
-                  <canvas ref={lightboxCanvasRef} />
+                <div
+                  className="lb-stage"
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    setLbZoom((z) => {
+                      const next = Math.max(1, Math.min(5, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+                      if (next === 1) setLbPan({ x: 0, y: 0 });
+                      return next;
+                    });
+                  }}
+                  onPointerDown={(e) => {
+                    // Double-tap to toggle zoom
+                    const now = Date.now();
+                    if (now - lbLastTap.current < 280) {
+                      setLbZoom((z) => (z > 1 ? 1 : 2.2));
+                      setLbPan({ x: 0, y: 0 });
+                      lbLastTap.current = 0;
+                      return;
+                    }
+                    lbLastTap.current = now;
+                    if (lbZoom > 1) {
+                      lbPanStart.current = { x: e.clientX, y: e.clientY, px: lbPan.x, py: lbPan.y };
+                      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                    }
+                  }}
+                  onPointerMove={(e) => {
+                    if (!lbPanStart.current) return;
+                    const dx = e.clientX - lbPanStart.current.x;
+                    const dy = e.clientY - lbPanStart.current.y;
+                    setLbPan({ x: lbPanStart.current.px + dx, y: lbPanStart.current.py + dy });
+                  }}
+                  onPointerUp={(e) => {
+                    lbPanStart.current = null;
+                    try { (e.currentTarget as Element).releasePointerCapture(e.pointerId); } catch {/* noop */}
+                  }}
+                >
+                  <canvas
+                    ref={lightboxCanvasRef}
+                    style={{
+                      transform: `translate(${lbPan.x}px, ${lbPan.y}px) scale(${lbZoom})`,
+                      cursor: lbZoom > 1 ? "grab" : "zoom-in",
+                      transition: lbPanStart.current ? "none" : "transform .12s ease",
+                    }}
+                  />
                 </div>
                 <button
                   className="lb-nav next"
@@ -934,6 +1031,35 @@ function Index() {
                 >
                   ›
                 </button>
+                <div className="lb-zoom">
+                  <button
+                    className="lb-btn"
+                    onClick={() => {
+                      setLbZoom((z) => Math.max(1, z / 1.4));
+                      if (lbZoom / 1.4 <= 1) setLbPan({ x: 0, y: 0 });
+                    }}
+                    aria-label="Zoom out"
+                  >
+                    −
+                  </button>
+                  <span className="lb-zoom-val">{Math.round(lbZoom * 100)}%</span>
+                  <button
+                    className="lb-btn"
+                    onClick={() => setLbZoom((z) => Math.min(5, z * 1.4))}
+                    aria-label="Zoom in"
+                  >
+                    +
+                  </button>
+                  <button
+                    className="lb-btn"
+                    onClick={() => {
+                      setLbZoom(1);
+                      setLbPan({ x: 0, y: 0 });
+                    }}
+                  >
+                    Reset
+                  </button>
+                </div>
               </div>
             );
           })()}
@@ -1075,6 +1201,14 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .lb-nav:disabled { opacity: 0.25; cursor: not-allowed; }
 .lb-nav.prev { left: 8px; }
 .lb-nav.next { right: 8px; }
+.lb-seg { display: flex; border: 1px solid rgba(247,244,237,0.4); border-radius: 4px; overflow: hidden; }
+.lb-seg button { background: transparent; color: var(--paper); font-family: 'Archivo Narrow', sans-serif; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; padding: 7px 14px; border: none; cursor: pointer; }
+.lb-seg button.active { background: var(--paper); color: var(--ink); }
+.lb-stage { overflow: hidden; touch-action: none; width: 100%; height: 100%; }
+.lb-stage canvas { transform-origin: center center; }
+.lb-zoom { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.55); padding: 6px 10px; border-radius: 999px; }
+.lb-zoom .lb-btn { padding: 4px 12px; font-size: 14px; min-width: 36px; }
+.lb-zoom-val { color: var(--paper); font-family: 'JetBrains Mono', monospace; font-size: 11px; min-width: 44px; text-align: center; }
 .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); gap: 8px; }
 .empty-state .glyph { font-family: 'Archivo Narrow', sans-serif; font-size: 64px; font-weight: 800; color: var(--panel); line-height: 1; }
 .empty-state .msg { font-size: 14px; max-width: 320px; line-height: 1.6; }
@@ -1106,5 +1240,8 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
   .app { flex-direction: column; }
   .sidebar { width: 100%; height: auto; max-height: 50vh; border-right: none; border-bottom: 1px solid var(--line); }
   .main { height: 50vh; }
+  .lightbox { padding: 48px 4px 64px; }
+  .lb-nav { width: 36px; height: 52px; font-size: 22px; }
+  .lb-stage canvas { max-height: calc(100vh - 130px); }
 }
 `;
