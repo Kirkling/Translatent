@@ -386,17 +386,12 @@ function Index() {
   // ---- Save snapshot whenever pages change
   useEffect(() => {
     if (!fileLabel || !pages.length) return;
-    const t = setTimeout(() => {
-      void saveSnapshot(fileLabel.id, pages[0].blob.size ? pages[0].blob : pages[0].blob, fileLabel.name, 0, 0, pages);
-    }, 0);
-    // The above keeps the existing CBZ blob via the previously saved record's blob.
-    // We need the real blob — re-fetch from IDB so we don't lose it:
-    (async () => {
+    // Debounce so rapid status flips don't hammer IDB.
+    const t = setTimeout(async () => {
       const prev = await idbGet(fileLabel.id);
-      if (prev) {
-        await saveSnapshot(fileLabel.id, prev.blob, prev.name, prev.size, prev.lastModified, pages);
-      }
-    })();
+      if (!prev) return;
+      await saveSnapshot(fileLabel.id, prev.blob, prev.name, prev.size, prev.lastModified, pages);
+    }, 500);
     return () => clearTimeout(t);
   }, [pages, fileLabel, saveSnapshot]);
 
