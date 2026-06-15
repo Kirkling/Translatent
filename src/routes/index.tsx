@@ -181,6 +181,11 @@ function Index() {
   const [expanded, setExpanded] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxTranslated, setLightboxTranslated] = useState(true);
+  const [lbZoom, setLbZoom] = useState(1);
+  const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
+  const lbPanStart = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const lbPinchStart = useRef<{ dist: number; zoom: number } | null>(null);
+  const lbLastTap = useRef<number>(0);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -192,6 +197,12 @@ function Index() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lightboxCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Reset zoom whenever the lightbox image changes or closes
+  useEffect(() => {
+    setLbZoom(1);
+    setLbPan({ x: 0, y: 0 });
+  }, [lightboxIndex]);
+
   const logRef = useRef<HTMLDivElement>(null);
   const pauseRef = useRef(false);
   const dragStartY = useRef<number | null>(null);
