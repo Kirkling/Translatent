@@ -30,6 +30,7 @@ async function callGateway(messages: unknown[]) {
   if (!key) throw new Error("LOVABLE_API_KEY missing");
   const maxAttempts = 5;
   let lastErr = "";
+  let suggestedDelayMs = 0;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -44,7 +45,10 @@ async function callGateway(messages: unknown[]) {
     });
     if (res.ok) {
       const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      return data.choices?.[0]?.message?.content ?? "";
+      return {
+        content: data.choices?.[0]?.message?.content ?? "",
+        throttleMs: suggestedDelayMs,
+      };
     }
     const text = await res.text();
     lastErr = `${res.status}: ${text.slice(0, 200)}`;
@@ -56,6 +60,8 @@ async function callGateway(messages: unknown[]) {
         : 1000 * Math.pow(2, attempt);
       const base = Math.min(capped, 8000);
       const jitter = Math.floor(Math.random() * 500);
+      // Tell the client to slow down its inter-page pacing on a hit.
+      suggestedDelayMs = Math.max(suggestedDelayMs, base + 1000);
       await new Promise((r) => setTimeout(r, base + jitter));
       continue;
     }
@@ -77,7 +83,13 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     return [];
   }
   if (!Array.isArray(arr)) return [];
-  const out: Array<{ x: number; y: number; w: number; h: number; translated: string; bg: string }> = [];
+  type Out = {
+    x: number; y: number; w: number; h: number;
+    translated: string; bg: string;
+    kind: "bubble" | "narration" | "sfx" | "sign" | "freefloat";
+    hasBackdrop: boolean;
+  };
+  const out: Out[] = [];
   for (const r of arr) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
@@ -87,6 +99,14 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     const h = Number(o.h);
     const translated = typeof o.translated === "string" ? o.translated : "";
     const bg = typeof o.bg === "string" && /^#?[0-9a-f]{6}$/i.test(o.bg) ? (o.bg.startsWith("#") ? o.bg : `#${o.bg}`) : "#FFFFFF";
+    const kindRaw = typeof o.kind === "string" ? o.kind.toLowerCase() : "bubble";
+    const kind: Out["kind"] =
+      kindRaw === "narration" || kindRaw === "sfx" || kindRaw === "sign" || kindRaw === "freefloat"
+        ? kindRaw
+        : "bubble";
+    const hasBackdrop = typeof o.hasBackdrop === "boolean"
+      ? o.hasBackdrop
+      : (kind === "bubble" || kind === "narration");
     if (![x, y, w, h].every((n) => Number.isFinite(n))) continue;
     if (w <= 0 || h <= 0) continue;
     if (!translated) continue;
@@ -97,6 +117,8 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
       h: Math.max(1, Math.min(maxH - y, h)),
       translated,
       bg,
+      kind,
+      hasBackdrop,
     });
   }
   return out;
@@ -118,6 +140,7 @@ export const Route = createFileRoute("/api/translate")({
           const glossary = String(form.get("glossary") || "");
           const noFlag = String(form.get("noFlag") || "true") === "true";
           const textOnly = String(form.get("textOnly") || "true") === "true";
+          const priorContext = String(form.get("priorContext") || "").slice(0, 2000);
 
           if (!(image instanceof Blob)) return json({ error: "image field required" }, 400);
 
@@ -132,7 +155,7 @@ export const Route = createFileRoute("/api/translate")({
           if (kind === "presence") {
             const system =
               "You answer with a single word: YES or NO. You check ONLY whether an image contains any readable text characters (dialogue, narration, sound effects, signs, captions) of any language. Do not describe artwork. Respond with exactly one word.";
-            const content = await callGateway([
+            const r = await callGateway([
               { role: "system", content: system },
               {
                 role: "user",
@@ -142,8 +165,8 @@ export const Route = createFileRoute("/api/translate")({
                 ],
               },
             ]);
-            const ans = content.trim().toUpperCase();
-            return json({ hasText: ans.startsWith("Y") });
+            const ans = r.content.trim().toUpperCase();
+            return json({ hasText: ans.startsWith("Y"), throttle: r.throttleMs ? { retryAfterMs: r.throttleMs } : undefined });
           }
 
           const srcName = LANG_NAMES[srcLang] || LANG_NAMES.auto;
@@ -161,16 +184,20 @@ export const Route = createFileRoute("/api/translate")({
 
           const system = [
             `You are a manga text-replacement assistant translating from ${srcName} to ${tgtName}. ${scopeRules}`,
-            `For each text region you find, report its pixel bounding box (x, y, width, height — origin at top-left of the image) and provide a ${tgtName} translation of the source text inside it.`,
-            `Also report a single representative background color for each box as a hex code, sampled from just outside the text glyphs (e.g. the speech-bubble fill or panel background), so the translated text can be overlaid cleanly.`,
+            `WORKFLOW: First read every text region on the page in correct reading order (right-to-left top-to-bottom for Japanese/Chinese, left-to-right top-to-bottom for Korean/English). Translate the whole page together as a single cohesive scene — pronouns, names, and tone should stay consistent across bubbles. Then emit one JSON entry per region.`,
+            `For each region report: pixel bounding box (x, y, w, h — origin at top-left); ${tgtName} translation; a single representative "bg" hex color sampled JUST OUTSIDE the glyphs (the speech-bubble fill or panel background); a "kind" label — one of "bubble" (rounded speech bubble), "narration" (boxed narrator caption), "sfx" (sound effect / onomatopoeia drawn directly on art), "sign" (text on a sign / object), "freefloat" (handwritten or floating text with no backdrop); and a boolean "hasBackdrop" — true ONLY if the original text sits on a solid fill (white bubble, opaque caption box). For sfx, signs without a solid plate, or text drawn over art, set hasBackdrop=false so the overlay matches the original style instead of stamping a rectangle on the artwork.`,
+            `Bounding boxes must tightly hug the glyphs (no extra whitespace) so the overlay scales to the original text size.`,
+            priorContext
+              ? `PRIOR CONTEXT — these were the last lines translated on the previous page, use them for continuity (do not re-translate them):\n${priorContext}`
+              : "",
             langRules,
             glossaryRules,
-            `Respond ONLY with a JSON array, no prose, no markdown fences. Each element: {"x":number,"y":number,"w":number,"h":number,"translated":"...","bg":"#RRGGBB"}. If there is no text at all, respond with [].`,
+            `Respond ONLY with a JSON array, no prose, no markdown fences. Each element: {"x":number,"y":number,"w":number,"h":number,"translated":"...","bg":"#RRGGBB","kind":"bubble|narration|sfx|sign|freefloat","hasBackdrop":true|false}. If there is no text at all, respond with [].`,
           ]
             .filter(Boolean)
             .join("\n\n");
 
-          const content = await callGateway([
+          const r = await callGateway([
             { role: "system", content: system },
             {
               role: "user",
@@ -184,8 +211,11 @@ export const Route = createFileRoute("/api/translate")({
             },
           ]);
 
-          const regions = parseRegions(content, width || 1, height || 1);
-          return json({ regions });
+          const regions = parseRegions(r.content, width || 1, height || 1);
+          return json({
+            regions,
+            throttle: r.throttleMs ? { retryAfterMs: r.throttleMs } : undefined,
+          });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           // Return 200 with an error field so the client can show the message
