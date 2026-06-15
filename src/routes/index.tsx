@@ -1201,6 +1201,14 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .lb-nav:disabled { opacity: 0.25; cursor: not-allowed; }
 .lb-nav.prev { left: 8px; }
 .lb-nav.next { right: 8px; }
+.lb-seg { display: flex; border: 1px solid rgba(247,244,237,0.4); border-radius: 4px; overflow: hidden; }
+.lb-seg button { background: transparent; color: var(--paper); font-family: 'Archivo Narrow', sans-serif; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; padding: 7px 14px; border: none; cursor: pointer; }
+.lb-seg button.active { background: var(--paper); color: var(--ink); }
+.lb-stage { overflow: hidden; touch-action: none; width: 100%; height: 100%; }
+.lb-stage canvas { transform-origin: center center; }
+.lb-zoom { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.55); padding: 6px 10px; border-radius: 999px; }
+.lb-zoom .lb-btn { padding: 4px 12px; font-size: 14px; min-width: 36px; }
+.lb-zoom-val { color: var(--paper); font-family: 'JetBrains Mono', monospace; font-size: 11px; min-width: 44px; text-align: center; }
 .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); gap: 8px; }
 .empty-state .glyph { font-family: 'Archivo Narrow', sans-serif; font-size: 64px; font-weight: 800; color: var(--panel); line-height: 1; }
 .empty-state .msg { font-size: 14px; max-width: 320px; line-height: 1.6; }
