@@ -1240,5 +1240,8 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
   .app { flex-direction: column; }
   .sidebar { width: 100%; height: auto; max-height: 50vh; border-right: none; border-bottom: 1px solid var(--line); }
   .main { height: 50vh; }
+  .lightbox { padding: 48px 4px 64px; }
+  .lb-nav { width: 36px; height: 52px; font-size: 22px; }
+  .lb-stage canvas { max-height: calc(100vh - 130px); }
 }
 `;
