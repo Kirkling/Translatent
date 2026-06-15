@@ -443,7 +443,34 @@ function Index() {
     setDownloadUrl(url);
     setDownloadName(name);
     setBuilding(false);
-    appendLog("Download ready — click the link below.", "ok-line");
+    appendLog("Download ready — starting download…", "ok-line");
+    // Kick off the actual download. iOS Safari ignores <a download> on blob:
+    // URLs, so try Web Share API with a file first, then fall back to a
+    // programmatic anchor click.
+    try {
+      const file = new File([out], name, { type: "application/vnd.comicbook+zip" });
+      const nav = navigator as Navigator & {
+        canShare?: (data: { files?: File[] }) => boolean;
+        share?: (data: { files?: File[]; title?: string }) => Promise<void>;
+      };
+      if (nav.canShare && nav.share && nav.canShare({ files: [file] })) {
+        await nav.share({ files: [file], title: name });
+        appendLog("Shared via system sheet.", "ok-line");
+      } else {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+    } catch (err) {
+      appendLog(
+        `Auto-download blocked — tap the green link below. (${err instanceof Error ? err.message : String(err)})`,
+        "accent-line",
+      );
+    }
   }, [pages, fileLabel, appendLog, building, downloadUrl]);
 
   useEffect(() => {
