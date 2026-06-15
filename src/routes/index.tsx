@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import {
