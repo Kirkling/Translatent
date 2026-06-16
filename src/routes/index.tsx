@@ -124,9 +124,9 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const ink = pickInk(fill);
 
   if (hasBackdrop) {
-    // Inflate the mask so original glyphs are fully covered, then redraw a
-    // clean rounded rect in the sampled bubble color.
-    const pad = Math.max(3, Math.min(w, h) * (kind === "narration" ? 0.04 : 0.08));
+    // Redraw bubble at the SAME dimensions as the original so it overlays cleanly.
+    // Only a tiny pad so anti-aliased edges of the original glyphs are covered.
+    const pad = Math.max(1, Math.min(w, h) * 0.02);
     const bx = x - pad, by = y - pad, bw = w + pad * 2, bh = h + pad * 2;
     const radius = kind === "narration" ? 2 : Math.max(4, Math.min(bw, bh) * 0.22);
     ctx.fillStyle = fill;
@@ -137,8 +137,8 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
     } else ctx.fillRect(bx, by, bw, bh);
   } else {
     // No backdrop: sample a ring around the bbox to get the underlying art
-    // color, then erase the original text with that color so the overlay
-    // blends. Avoids the ugly white-rectangle look on sfx / signs.
+    // color, then erase the original text with that color so the translated
+    // text sits directly on the artwork — no rectangle, no shadow, no plate.
     try {
       const ring = Math.max(2, Math.min(w, h) * 0.06);
       const sx = Math.max(0, Math.floor(x - ring));
@@ -173,26 +173,28 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   ctx.fillStyle = ink;
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
-  const padX = Math.max(3, w * 0.06);
-  const padY = Math.max(2, h * 0.08);
+  const padX = Math.max(2, w * 0.04);
+  const padY = Math.max(1, h * 0.04);
   const maxWidth = w - padX * 2;
   const maxHeight = h - padY * 2;
-  // Start near the original text's pixel height and shrink to fit.
+  // Match the original text's pixel height. The bbox should hug the glyphs,
+  // so use the box height itself as the starting font size and only shrink
+  // if the translation overflows.
   let fontSize = Math.min(
-    Math.floor(h * (kind === "sfx" ? 0.85 : 0.5)),
-    Math.max(11, Math.floor(Math.sqrt((w * h) / Math.max(6, translated.length)) * 1.05)),
+    Math.floor(h * (kind === "sfx" ? 0.95 : 0.78)),
+    Math.max(12, Math.floor(Math.sqrt((w * h) / Math.max(6, translated.length)) * 1.4)),
   );
   let lines: string[] = [];
   const lineGap = 1.18;
   const weight = kind === "sfx" ? 800 : kind === "narration" ? 500 : 600;
   const display = kind === "sfx" ? translated.toUpperCase() : translated;
-  for (; fontSize >= 8; fontSize -= 1) {
+  for (; fontSize >= 9; fontSize -= 1) {
     ctx.font = `${weight} ${fontSize}px ${family}`;
     lines = wrapText(ctx, display, maxWidth);
     const totalHeight = lines.length * fontSize * lineGap;
     const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
     if (totalHeight <= maxHeight && widest <= maxWidth) break;
-    if (fontSize === 8) break;
+    if (fontSize === 9) break;
   }
   ctx.font = `${weight} ${fontSize}px ${family}`;
   const lineHeight = fontSize * lineGap;
@@ -200,16 +202,7 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const cy = y + h / 2 - totalTextHeight / 2 + fontSize / 2;
   const cx = x + w / 2;
 
-  // For no-backdrop glyphs, draw a contrasting stroke for legibility on art
-  if (!hasBackdrop) {
-    ctx.lineWidth = Math.max(2, fontSize * 0.18);
-    ctx.strokeStyle = ink === "#111111" ? "#FFFFFF" : "#000000";
-    ctx.lineJoin = "round";
-    for (let i = 0; i < lines.length; i++) {
-      ctx.strokeText(lines[i], cx, cy + i * lineHeight, maxWidth);
-    }
-    ctx.fillStyle = ink === "#111111" ? "#111111" : "#F7F4ED";
-  }
+  // No stroke / shadow — user wants overlay to match original style exactly.
   for (let i = 0; i < lines.length; i++) {
     ctx.fillText(lines[i], cx, cy + i * lineHeight, maxWidth);
   }
