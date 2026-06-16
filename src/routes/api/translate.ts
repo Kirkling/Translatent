@@ -41,6 +41,9 @@ async function callGateway(messages: unknown[]) {
       body: JSON.stringify({
         model: "google/gemini-3-flash-preview",
         messages,
+        temperature: 0,
+        top_p: 0.1,
+        seed: 7,
       }),
     });
     if (res.ok) {
@@ -141,6 +144,7 @@ export const Route = createFileRoute("/api/translate")({
           const noFlag = String(form.get("noFlag") || "true") === "true";
           const textOnly = String(form.get("textOnly") || "true") === "true";
           const priorContext = String(form.get("priorContext") || "").slice(0, 2000);
+          const customInstructions = String(form.get("customInstructions") || "").slice(0, 1500);
 
           if (!(image instanceof Blob)) return json({ error: "image field required" }, 400);
 
@@ -184,14 +188,17 @@ export const Route = createFileRoute("/api/translate")({
 
           const system = [
             `You are a manga text-replacement assistant translating from ${srcName} to ${tgtName}. ${scopeRules}`,
-            `WORKFLOW: First read every text region on the page in correct reading order (right-to-left top-to-bottom for Japanese/Chinese, left-to-right top-to-bottom for Korean/English). Translate the whole page together as a single cohesive scene — pronouns, names, and tone should stay consistent across bubbles. Then emit one JSON entry per region.`,
-            `For each region report: pixel bounding box (x, y, w, h — origin at top-left); ${tgtName} translation; a single representative "bg" hex color sampled JUST OUTSIDE the glyphs (the speech-bubble fill or panel background); a "kind" label — one of "bubble" (rounded speech bubble), "narration" (boxed narrator caption), "sfx" (sound effect / onomatopoeia drawn directly on art), "sign" (text on a sign / object), "freefloat" (handwritten or floating text with no backdrop); and a boolean "hasBackdrop" — true ONLY if the original text sits on a solid fill (white bubble, opaque caption box). For sfx, signs without a solid plate, or text drawn over art, set hasBackdrop=false so the overlay matches the original style instead of stamping a rectangle on the artwork.`,
-            `Bounding boxes must tightly hug the glyphs (no extra whitespace) so the overlay scales to the original text size.`,
+            `WORKFLOW — perform TWO passes deterministically:\n  PASS 1: Scan the page in correct reading order (right-to-left top-to-bottom for Japanese/Chinese, left-to-right top-to-bottom for Korean/English). Enumerate EVERY text region of any kind: dialogue bubbles, narration boxes, sound effects (large and small), signs, labels, handwritten/floating text, off-panel whispers, asterisked notes, even single-character interjections.\n  PASS 2: Re-scan the page from the opposite corner to catch any region missed in pass 1 (especially small SFX and edge text). Merge the two lists; do NOT duplicate regions whose boxes overlap by more than 50%.\n  Then translate the whole page together as a single cohesive scene — pronouns, names, honorifics, and tone must stay consistent across bubbles. Emit one JSON entry per unique region. Be exhaustive: missing a bubble is worse than including a borderline one.`,
+            `For each region report: pixel bounding box (x, y, w, h — origin at top-left); ${tgtName} translation; a single representative "bg" hex color sampled JUST OUTSIDE the glyphs (the speech-bubble fill or panel background); a "kind" label — one of "bubble" (rounded speech bubble), "narration" (boxed narrator caption), "sfx" (sound effect / onomatopoeia drawn directly on art), "sign" (text on a sign / object), "freefloat" (handwritten or floating text with no backdrop); and a boolean "hasBackdrop" — true ONLY if the original text sits on a solid opaque fill (white speech bubble, solid caption box). If the original text is drawn directly on artwork with NO solid plate behind it (most SFX, handwritten asides, signs without a back-plate), set hasBackdrop=false — the renderer will erase the original and place the translation without any backdrop, matching the source style.`,
+            `Bounding boxes must TIGHTLY hug the actual glyphs (no extra whitespace, no margin). The box height should equal the cap-height of the original lettering so the translated text renders at the same visual size as the original.`,
             priorContext
               ? `PRIOR CONTEXT — these were the last lines translated on the previous page, use them for continuity (do not re-translate them):\n${priorContext}`
               : "",
             langRules,
             glossaryRules,
+            customInstructions.trim()
+              ? `USER INSTRUCTIONS — follow these in addition to the rules above:\n${customInstructions.trim()}`
+              : "",
             `Respond ONLY with a JSON array, no prose, no markdown fences. Each element: {"x":number,"y":number,"w":number,"h":number,"translated":"...","bg":"#RRGGBB","kind":"bubble|narration|sfx|sign|freefloat","hasBackdrop":true|false}. If there is no text at all, respond with [].`,
           ]
             .filter(Boolean)
