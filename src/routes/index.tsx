@@ -1018,7 +1018,6 @@ function Index() {
                 limitToBounds={false}
                 centerOnInit={true}
                 centerZoomedOut={false}
-                alignmentAnimation={{ disabled: true, sizeX: 0, sizeY: 0 }}
               >
                 {({ zoomIn, zoomOut, resetTransform }) => (
                   <>
