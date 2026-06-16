@@ -687,6 +687,13 @@ function Index() {
     () => translateRange(pages.map((_, i) => i).filter((i) => pages[i].status !== "translated")),
     [translateRange, pages],
   );
+  const rerunAll = useCallback(() => {
+    if (running || !pages.length) return;
+    if (!confirm("Re-translate every page from scratch? This replaces existing translations.")) return;
+    setPages((prev) => prev.map((p) => ({ ...p, status: "pending" as PageStatus, regions: [] })));
+    // Slight delay so the state flush lands before translateRange snapshots pages.
+    setTimeout(() => translateRange(pages.map((_, i) => i)), 50);
+  }, [running, pages, translateRange]);
   const resumeTranslation = useCallback(
     () => translateRange(remaining),
     [translateRange, remaining],
