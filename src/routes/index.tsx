@@ -478,6 +478,7 @@ function Index() {
     // Render at 2x so text stays crisp when the user zooms in.
     const dpr = 2;
     canvas.width = p.w * dpr; canvas.height = p.h * dpr;
+    canvas.style.width = `${p.w}px`; canvas.style.height = `${p.h}px`;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
