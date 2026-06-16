@@ -124,9 +124,9 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const ink = pickInk(fill);
 
   if (hasBackdrop) {
-    // Inflate the mask so original glyphs are fully covered, then redraw a
-    // clean rounded rect in the sampled bubble color.
-    const pad = Math.max(3, Math.min(w, h) * (kind === "narration" ? 0.04 : 0.08));
+    // Redraw bubble at the SAME dimensions as the original so it overlays cleanly.
+    // Only a tiny pad so anti-aliased edges of the original glyphs are covered.
+    const pad = Math.max(1, Math.min(w, h) * 0.02);
     const bx = x - pad, by = y - pad, bw = w + pad * 2, bh = h + pad * 2;
     const radius = kind === "narration" ? 2 : Math.max(4, Math.min(bw, bh) * 0.22);
     ctx.fillStyle = fill;
@@ -137,8 +137,8 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
     } else ctx.fillRect(bx, by, bw, bh);
   } else {
     // No backdrop: sample a ring around the bbox to get the underlying art
-    // color, then erase the original text with that color so the overlay
-    // blends. Avoids the ugly white-rectangle look on sfx / signs.
+    // color, then erase the original text with that color so the translated
+    // text sits directly on the artwork — no rectangle, no shadow, no plate.
     try {
       const ring = Math.max(2, Math.min(w, h) * 0.06);
       const sx = Math.max(0, Math.floor(x - ring));
@@ -173,26 +173,28 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   ctx.fillStyle = ink;
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
-  const padX = Math.max(3, w * 0.06);
-  const padY = Math.max(2, h * 0.08);
+  const padX = Math.max(2, w * 0.04);
+  const padY = Math.max(1, h * 0.04);
   const maxWidth = w - padX * 2;
   const maxHeight = h - padY * 2;
-  // Start near the original text's pixel height and shrink to fit.
+  // Match the original text's pixel height. The bbox should hug the glyphs,
+  // so use the box height itself as the starting font size and only shrink
+  // if the translation overflows.
   let fontSize = Math.min(
-    Math.floor(h * (kind === "sfx" ? 0.85 : 0.5)),
-    Math.max(11, Math.floor(Math.sqrt((w * h) / Math.max(6, translated.length)) * 1.05)),
+    Math.floor(h * (kind === "sfx" ? 0.95 : 0.78)),
+    Math.max(12, Math.floor(Math.sqrt((w * h) / Math.max(6, translated.length)) * 1.4)),
   );
   let lines: string[] = [];
   const lineGap = 1.18;
   const weight = kind === "sfx" ? 800 : kind === "narration" ? 500 : 600;
   const display = kind === "sfx" ? translated.toUpperCase() : translated;
-  for (; fontSize >= 8; fontSize -= 1) {
+  for (; fontSize >= 9; fontSize -= 1) {
     ctx.font = `${weight} ${fontSize}px ${family}`;
     lines = wrapText(ctx, display, maxWidth);
     const totalHeight = lines.length * fontSize * lineGap;
     const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
     if (totalHeight <= maxHeight && widest <= maxWidth) break;
-    if (fontSize === 8) break;
+    if (fontSize === 9) break;
   }
   ctx.font = `${weight} ${fontSize}px ${family}`;
   const lineHeight = fontSize * lineGap;
@@ -200,16 +202,7 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const cy = y + h / 2 - totalTextHeight / 2 + fontSize / 2;
   const cx = x + w / 2;
 
-  // For no-backdrop glyphs, draw a contrasting stroke for legibility on art
-  if (!hasBackdrop) {
-    ctx.lineWidth = Math.max(2, fontSize * 0.18);
-    ctx.strokeStyle = ink === "#111111" ? "#FFFFFF" : "#000000";
-    ctx.lineJoin = "round";
-    for (let i = 0; i < lines.length; i++) {
-      ctx.strokeText(lines[i], cx, cy + i * lineHeight, maxWidth);
-    }
-    ctx.fillStyle = ink === "#111111" ? "#111111" : "#F7F4ED";
-  }
+  // No stroke / shadow — user wants overlay to match original style exactly.
   for (let i = 0; i < lines.length; i++) {
     ctx.fillText(lines[i], cx, cy + i * lineHeight, maxWidth);
   }
@@ -247,6 +240,7 @@ function Index() {
   const [skipBlank, setSkipBlank] = useState(true);
   const [noFlag, setNoFlag] = useState(true);
   const [glossary, setGlossary] = useState("");
+  const [customInstructions, setCustomInstructions] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -461,9 +455,14 @@ function Index() {
     const p = pages[currentIndex];
     const canvas = canvasRef.current;
     if (!p || !canvas) return;
-    canvas.width = p.w; canvas.height = p.h;
+    const dpr = 2;
+    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
+    canvas.style.width = "100%"; canvas.style.height = "auto";
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(p.img, 0, 0, p.w, p.h);
     if (p.status === "translated" && p.regions.length > 0 && showTranslated) {
       for (const r of p.regions) drawTextBox(ctx, r);
@@ -476,9 +475,15 @@ function Index() {
     const p = pages[lightboxIndex];
     const canvas = lightboxCanvasRef.current;
     if (!p || !canvas) return;
-    canvas.width = p.w; canvas.height = p.h;
+    // Render at 2x so text stays crisp when the user zooms in.
+    const dpr = 2;
+    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
+    canvas.style.width = `${p.w}px`; canvas.style.height = `${p.h}px`;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(p.img, 0, 0, p.w, p.h);
     if (p.status === "translated" && p.regions.length > 0 && lightboxTranslated) {
       for (const r of p.regions) drawTextBox(ctx, r);
@@ -499,6 +504,7 @@ function Index() {
       fd.append("noFlag", String(noFlag));
       fd.append("textOnly", String(textOnly));
       if (priorContext) fd.append("priorContext", priorContext);
+      if (customInstructions.trim()) fd.append("customInstructions", customInstructions);
       const res = await fetch("/api/translate", { method: "POST", body: fd });
       const text = await res.text();
       let data: { error?: string; hasText?: boolean; regions?: Region[]; throttle?: { retryAfterMs?: number } } = {};
@@ -509,7 +515,7 @@ function Index() {
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
     },
-    [srcLang, tgtLang, glossary, noFlag, textOnly],
+    [srcLang, tgtLang, glossary, noFlag, textOnly, customInstructions],
   );
 
   const downloadCBZ = useCallback(async () => {
@@ -682,6 +688,13 @@ function Index() {
     () => translateRange(pages.map((_, i) => i).filter((i) => pages[i].status !== "translated")),
     [translateRange, pages],
   );
+  const rerunAll = useCallback(() => {
+    if (running || !pages.length) return;
+    if (!confirm("Re-translate every page from scratch? This replaces existing translations.")) return;
+    setPages((prev) => prev.map((p) => ({ ...p, status: "pending" as PageStatus, regions: [] })));
+    // Slight delay so the state flush lands before translateRange snapshots pages.
+    setTimeout(() => translateRange(pages.map((_, i) => i)), 50);
+  }, [running, pages, translateRange]);
   const resumeTranslation = useCallback(
     () => translateRange(remaining),
     [translateRange, remaining],
@@ -840,6 +853,16 @@ function Index() {
             />
           </div>
 
+          <div className="section">
+            <h3>Custom Instructions <span className="opt">(optional)</span></h3>
+            <textarea
+              className="field-text"
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              placeholder={"e.g. Never use bubbles or backdrops on SFX.\nAll narration is past-tense.\nKeep -san / -kun honorifics."}
+            />
+          </div>
+
           <div className="section activity">
             <h3>Activity <span className="pacing-tag">{(pacingMs / 1000).toFixed(1)}s/page</span></h3>
             <div className="actions">
@@ -855,6 +878,11 @@ function Index() {
               ) : (
                 <button className="btn-primary" disabled={!pages.length} onClick={runTranslation}>
                   {pages.some((p) => p.status === "translated") ? "Translate Remaining" : "Translate All Pages"}
+                </button>
+              )}
+              {!running && pages.some((p) => p.status === "translated") && (
+                <button className="btn-secondary" disabled={running} onClick={rerunAll}>
+                  Re-translate Everything
                 </button>
               )}
               <button className="btn-secondary" disabled={!translatedCount || running || building} onClick={downloadCBZ}>
@@ -888,6 +916,30 @@ function Index() {
             <div className="view-toggle">
               <button className={view === "grid" ? "active" : ""} onClick={() => setView("grid")}>Grid</button>
               <button className={view === "single" ? "active" : ""} onClick={() => setView("single")}>Page</button>
+            </div>
+          </div>
+
+          {/* Visible behind the mobile bottom-sheet when it's dragged down.
+              Shows live translation status and quick toggles. */}
+          <div className="sheet-backdrop" aria-hidden={sheetSnap !== 0}>
+            <div className={`sb-status${statusMode ? ` ${statusMode}` : ""}`}>
+              <span className="dot" />
+              <span className="sb-text">{statusText}</span>
+            </div>
+            {pages.length > 0 && (
+              <div className="sb-progress">
+                <div className="sb-fill" style={{ width: `${progress}%` }} />
+              </div>
+            )}
+            <div className="sb-toggles">
+              <div className="sb-seg">
+                <button className={view === "grid" ? "active" : ""} onClick={() => setView("grid")}>Grid</button>
+                <button className={view === "single" ? "active" : ""} onClick={() => setView("single")}>Page</button>
+              </div>
+              <div className="sb-seg">
+                <button className={!showTranslated ? "active" : ""} onClick={() => setShowTranslated(false)}>Original</button>
+                <button className={showTranslated ? "active" : ""} onClick={() => setShowTranslated(true)}>Translated</button>
+              </div>
             </div>
           </div>
 
@@ -985,10 +1037,12 @@ function Index() {
                 minScale={1}
                 maxScale={5}
                 doubleClick={{ mode: "reset", animationTime: 180 }}
-                wheel={{ step: 0.15 }}
+                wheel={{ step: 0.2 }}
                 pinch={{ step: 5 }}
-                limitToBounds={true}
+                panning={{ velocityDisabled: false }}
+                limitToBounds={false}
                 centerOnInit={true}
+                centerZoomedOut={false}
               >
                 {({ zoomIn, zoomOut, resetTransform }) => (
                   <>
@@ -1154,6 +1208,9 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .canvas-wrap canvas { max-width: 100%; max-height: 78vh; display: block; }
 .compare-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
 
+/* Sheet backdrop — hidden on desktop, visible on mobile under the sheet */
+.sheet-backdrop { display: none; }
+
 /* Lightbox */
 .lightbox { position: fixed; inset: 0; background: rgba(15,15,18,0.96); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 64px 16px 80px; padding-top: max(64px, env(safe-area-inset-top)); padding-bottom: max(80px, env(safe-area-inset-bottom)); }
 .lightbox-bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top)); background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0)); color: var(--paper); z-index: 2; gap: 10px; }
@@ -1211,12 +1268,23 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
   .viewer .drag-handle .grip { display: block; width: 44px; height: 5px; border-radius: 3px; background: var(--line); }
   .viewer .drag-handle:active .grip { background: var(--accent); }
   /* While the sheet is collapsed, the canvas below it (the currently-displayed page) shows */
-  .main::before {
-    content: "";
-    position: absolute; inset: 0;
-    background: var(--paper);
-    z-index: 0;
+  .sheet-backdrop {
+    display: flex; flex-direction: column; gap: 10px;
+    position: absolute; inset: 0; z-index: 1;
+    background: var(--paper); color: var(--ink);
+    padding: 16px 18px;
+    border-top: 1px solid var(--line);
   }
+  .sb-status { font-family: 'Archivo Narrow', sans-serif; font-weight: 700; font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .sb-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .sb-status.busy .dot { background: var(--accent); animation: pulse 1s infinite; }
+  .sb-status.done .dot { background: var(--ok); }
+  .sb-progress { height: 3px; background: var(--line); overflow: hidden; border-radius: 2px; }
+  .sb-fill { height: 100%; background: var(--accent); transition: width .3s ease; }
+  .sb-toggles { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .sb-seg { display: flex; border: 1px solid var(--ink); border-radius: 4px; overflow: hidden; }
+  .sb-seg button { flex: 1; background: var(--paper); color: var(--ink); font-family: 'Archivo Narrow', sans-serif; font-weight: 700; font-size: 12px; padding: 10px; text-transform: uppercase; letter-spacing: 0.5px; border: none; cursor: pointer; min-height: 44px; }
+  .sb-seg button.active { background: var(--ink); color: var(--paper); }
   .canvas-wrap canvas { max-height: 60vh; }
   .lightbox { padding: 56px 4px 72px; }
   .lb-nav { width: 40px; height: 56px; font-size: 22px; }
