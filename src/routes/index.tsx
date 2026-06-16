@@ -852,6 +852,16 @@ function Index() {
             />
           </div>
 
+          <div className="section">
+            <h3>Custom Instructions <span className="opt">(optional)</span></h3>
+            <textarea
+              className="field-text"
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              placeholder={"e.g. Never use bubbles or backdrops on SFX.\nAll narration is past-tense.\nKeep -san / -kun honorifics."}
+            />
+          </div>
+
           <div className="section activity">
             <h3>Activity <span className="pacing-tag">{(pacingMs / 1000).toFixed(1)}s/page</span></h3>
             <div className="actions">
@@ -867,6 +877,11 @@ function Index() {
               ) : (
                 <button className="btn-primary" disabled={!pages.length} onClick={runTranslation}>
                   {pages.some((p) => p.status === "translated") ? "Translate Remaining" : "Translate All Pages"}
+                </button>
+              )}
+              {!running && pages.some((p) => p.status === "translated") && (
+                <button className="btn-secondary" disabled={running} onClick={rerunAll}>
+                  Re-translate Everything
                 </button>
               )}
               <button className="btn-secondary" disabled={!translatedCount || running || building} onClick={downloadCBZ}>
