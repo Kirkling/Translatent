@@ -1012,7 +1012,7 @@ function Index() {
                 minScale={1}
                 maxScale={5}
                 doubleClick={{ mode: "reset", animationTime: 180 }}
-                wheel={{ step: 0.2, smoothStep: 0.01 }}
+                wheel={{ step: 0.2 }}
                 pinch={{ step: 5 }}
                 panning={{ velocityDisabled: false }}
                 limitToBounds={false}
