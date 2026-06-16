@@ -455,9 +455,14 @@ function Index() {
     const p = pages[currentIndex];
     const canvas = canvasRef.current;
     if (!p || !canvas) return;
-    canvas.width = p.w; canvas.height = p.h;
+    const dpr = 2;
+    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
+    canvas.style.width = "100%"; canvas.style.height = "auto";
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(p.img, 0, 0, p.w, p.h);
     if (p.status === "translated" && p.regions.length > 0 && showTranslated) {
       for (const r of p.regions) drawTextBox(ctx, r);
@@ -470,9 +475,14 @@ function Index() {
     const p = pages[lightboxIndex];
     const canvas = lightboxCanvasRef.current;
     if (!p || !canvas) return;
-    canvas.width = p.w; canvas.height = p.h;
+    // Render at 2x so text stays crisp when the user zooms in.
+    const dpr = 2;
+    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(p.img, 0, 0, p.w, p.h);
     if (p.status === "translated" && p.regions.length > 0 && lightboxTranslated) {
       for (const r of p.regions) drawTextBox(ctx, r);
@@ -493,6 +503,7 @@ function Index() {
       fd.append("noFlag", String(noFlag));
       fd.append("textOnly", String(textOnly));
       if (priorContext) fd.append("priorContext", priorContext);
+      if (customInstructions.trim()) fd.append("customInstructions", customInstructions);
       const res = await fetch("/api/translate", { method: "POST", body: fd });
       const text = await res.text();
       let data: { error?: string; hasText?: boolean; regions?: Region[]; throttle?: { retryAfterMs?: number } } = {};
@@ -503,7 +514,7 @@ function Index() {
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
     },
-    [srcLang, tgtLang, glossary, noFlag, textOnly],
+    [srcLang, tgtLang, glossary, noFlag, textOnly, customInstructions],
   );
 
   const downloadCBZ = useCallback(async () => {
