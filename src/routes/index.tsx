@@ -918,6 +918,30 @@ function Index() {
             </div>
           </div>
 
+          {/* Visible behind the mobile bottom-sheet when it's dragged down.
+              Shows live translation status and quick toggles. */}
+          <div className="sheet-backdrop" aria-hidden={sheetSnap !== 0}>
+            <div className={`sb-status${statusMode ? ` ${statusMode}` : ""}`}>
+              <span className="dot" />
+              <span className="sb-text">{statusText}</span>
+            </div>
+            {pages.length > 0 && (
+              <div className="sb-progress">
+                <div className="sb-fill" style={{ width: `${progress}%` }} />
+              </div>
+            )}
+            <div className="sb-toggles">
+              <div className="sb-seg">
+                <button className={view === "grid" ? "active" : ""} onClick={() => setView("grid")}>Grid</button>
+                <button className={view === "single" ? "active" : ""} onClick={() => setView("single")}>Page</button>
+              </div>
+              <div className="sb-seg">
+                <button className={!showTranslated ? "active" : ""} onClick={() => setShowTranslated(false)}>Original</button>
+                <button className={showTranslated ? "active" : ""} onClick={() => setShowTranslated(true)}>Translated</button>
+              </div>
+            </div>
+          </div>
+
           <div
             ref={sheetRef}
             className={`viewer sheet-snap-${sheetSnap}`}
