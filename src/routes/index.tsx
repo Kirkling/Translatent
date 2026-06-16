@@ -1012,10 +1012,13 @@ function Index() {
                 minScale={1}
                 maxScale={5}
                 doubleClick={{ mode: "reset", animationTime: 180 }}
-                wheel={{ step: 0.15 }}
+                wheel={{ step: 0.2, smoothStep: 0.01 }}
                 pinch={{ step: 5 }}
-                limitToBounds={true}
+                panning={{ velocityDisabled: false }}
+                limitToBounds={false}
                 centerOnInit={true}
+                centerZoomedOut={false}
+                alignmentAnimation={{ disabled: true, sizeX: 0, sizeY: 0 }}
               >
                 {({ zoomIn, zoomOut, resetTransform }) => (
                   <>
