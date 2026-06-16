@@ -1207,6 +1207,9 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .canvas-wrap canvas { max-width: 100%; max-height: 78vh; display: block; }
 .compare-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
 
+/* Sheet backdrop — hidden on desktop, visible on mobile under the sheet */
+.sheet-backdrop { display: none; }
+
 /* Lightbox */
 .lightbox { position: fixed; inset: 0; background: rgba(15,15,18,0.96); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 64px 16px 80px; padding-top: max(64px, env(safe-area-inset-top)); padding-bottom: max(80px, env(safe-area-inset-bottom)); }
 .lightbox-bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top)); background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0)); color: var(--paper); z-index: 2; gap: 10px; }
@@ -1264,12 +1267,23 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
   .viewer .drag-handle .grip { display: block; width: 44px; height: 5px; border-radius: 3px; background: var(--line); }
   .viewer .drag-handle:active .grip { background: var(--accent); }
   /* While the sheet is collapsed, the canvas below it (the currently-displayed page) shows */
-  .main::before {
-    content: "";
-    position: absolute; inset: 0;
-    background: var(--paper);
-    z-index: 0;
+  .sheet-backdrop {
+    display: flex; flex-direction: column; gap: 10px;
+    position: absolute; inset: 0; z-index: 1;
+    background: var(--paper); color: var(--ink);
+    padding: 16px 18px;
+    border-top: 1px solid var(--line);
   }
+  .sb-status { font-family: 'Archivo Narrow', sans-serif; font-weight: 700; font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .sb-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .sb-status.busy .dot { background: var(--accent); animation: pulse 1s infinite; }
+  .sb-status.done .dot { background: var(--ok); }
+  .sb-progress { height: 3px; background: var(--line); overflow: hidden; border-radius: 2px; }
+  .sb-fill { height: 100%; background: var(--accent); transition: width .3s ease; }
+  .sb-toggles { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .sb-seg { display: flex; border: 1px solid var(--ink); border-radius: 4px; overflow: hidden; }
+  .sb-seg button { flex: 1; background: var(--paper); color: var(--ink); font-family: 'Archivo Narrow', sans-serif; font-weight: 700; font-size: 12px; padding: 10px; text-transform: uppercase; letter-spacing: 0.5px; border: none; cursor: pointer; min-height: 44px; }
+  .sb-seg button.active { background: var(--ink); color: var(--paper); }
   .canvas-wrap canvas { max-height: 60vh; }
   .lightbox { padding: 56px 4px 72px; }
   .lb-nav { width: 40px; height: 56px; font-size: 22px; }
