@@ -240,6 +240,7 @@ function Index() {
   const [skipBlank, setSkipBlank] = useState(true);
   const [noFlag, setNoFlag] = useState(true);
   const [glossary, setGlossary] = useState("");
+  const [customInstructions, setCustomInstructions] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
