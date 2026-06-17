@@ -1111,9 +1111,9 @@ function Index() {
 function snapTop(s: 0 | 1 | 2): number {
   if (typeof window === "undefined") return 0;
   const h = window.innerHeight;
-  // 0 = peek (sheet only shows ~28% of height), 1 = mid (~62%), 2 = full (~94%)
-  if (s === 0) return Math.round(h * 0.62);
-  if (s === 1) return Math.round(h * 0.18);
+  // 0 = peek (sheet pulled down — backdrop fully visible), 1 = mid, 2 = full
+  if (s === 0) return Math.round(h * 0.78);
+  if (s === 1) return Math.round(h * 0.35);
   return 0;
 }
 
