@@ -136,41 +136,22 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
       ctx.fill();
     } else ctx.fillRect(bx, by, bw, bh);
   } else {
-    // No backdrop: sample a ring around the bbox to get the underlying art
-    // color, then erase the original text with that color so the translated
-    // text sits directly on the artwork — no rectangle, no shadow, no plate.
-    try {
-      const ring = Math.max(2, Math.min(w, h) * 0.06);
-      const sx = Math.max(0, Math.floor(x - ring));
-      const sy = Math.max(0, Math.floor(y - ring));
-      const sw = Math.min(ctx.canvas.width - sx, Math.ceil(w + ring * 2));
-      const sh = Math.min(ctx.canvas.height - sy, Math.ceil(h + ring * 2));
-      const sample = ctx.getImageData(sx, sy, sw, sh).data;
-      // Average pixels on the outer ring only (skip interior, which holds text)
-      let rs = 0, gs = 0, bs = 0, n = 0;
-      for (let py = 0; py < sh; py++) {
-        for (let px = 0; px < sw; px++) {
-          const inInterior = px >= ring && px < sw - ring && py >= ring && py < sh - ring;
-          if (inInterior) continue;
-          const o = (py * sw + px) * 4;
-          rs += sample[o]; gs += sample[o + 1]; bs += sample[o + 2]; n++;
-        }
-      }
-      if (n > 0) {
-        const ar = Math.round(rs / n), ag = Math.round(gs / n), ab = Math.round(bs / n);
-        const grad = ctx.createRadialGradient(
-          x + w / 2, y + h / 2, Math.min(w, h) * 0.15,
-          x + w / 2, y + h / 2, Math.max(w, h) * 0.7,
-        );
-        grad.addColorStop(0, `rgba(${ar},${ag},${ab},1)`);
-        grad.addColorStop(1, `rgba(${ar},${ag},${ab},0)`);
-        ctx.fillStyle = grad;
-        ctx.fillRect(x - w * 0.2, y - h * 0.2, w * 1.4, h * 1.4);
-      }
-    } catch {/* ignore CORS or empty canvas */}
+    // No engineered bubble. Sample the ring of pixels JUST outside the bbox
+    // to learn the underlying surface color (the artwork backdrop OR a solid
+    // text plate that the lettering sits on, e.g. a black subtitle banner),
+    // then erase the original text by painting an OPAQUE rectangle of that
+    // color over the exact source-text bounds. The translated text then
+    // clips cleanly onto this rectangle and inherits the original style —
+    // no shadow, no gradient halo, no bubble.
+    const fillColor = sampleRingColor(ctx, x, y, w, h) || fill;
+    const pad = Math.max(1, Math.min(w, h) * 0.04);
+    ctx.fillStyle = fillColor;
+    ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
+    // Update ink for legibility against the freshly painted rectangle.
+    ctx.fillStyle = pickInk(fillColor);
   }
 
-  ctx.fillStyle = ink;
+  if (hasBackdrop) ctx.fillStyle = ink;
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
   const padX = Math.max(2, w * 0.04);
@@ -207,6 +188,46 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
     ctx.fillText(lines[i], cx, cy + i * lineHeight, maxWidth);
   }
   ctx.restore();
+}
+
+function sampleRingColor(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number,
+): string | null {
+  try {
+    const ring = Math.max(2, Math.round(Math.min(w, h) * 0.08));
+    const sx = Math.max(0, Math.floor(x - ring));
+    const sy = Math.max(0, Math.floor(y - ring));
+    const sw = Math.min(ctx.canvas.width - sx, Math.ceil(w + ring * 2));
+    const sh = Math.min(ctx.canvas.height - sy, Math.ceil(h + ring * 2));
+    if (sw <= 0 || sh <= 0) return null;
+    const data = ctx.getImageData(sx, sy, sw, sh).data;
+    // Bucket outer-ring pixels by quantized color; pick the dominant bucket.
+    // This is more robust than a simple mean (which muddies black-on-white).
+    const buckets = new Map<number, { r: number; g: number; b: number; n: number }>();
+    for (let py = 0; py < sh; py++) {
+      for (let px = 0; px < sw; px++) {
+        const inInterior =
+          px >= ring && px < sw - ring && py >= ring && py < sh - ring;
+        if (inInterior) continue;
+        const o = (py * sw + px) * 4;
+        const r = data[o], g = data[o + 1], b = data[o + 2];
+        const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+        const bucket = buckets.get(key);
+        if (bucket) { bucket.r += r; bucket.g += g; bucket.b += b; bucket.n++; }
+        else buckets.set(key, { r, g, b, n: 1 });
+      }
+    }
+    let best: { r: number; g: number; b: number; n: number } | null = null;
+    buckets.forEach((v) => { if (!best || v.n > best.n) best = v; });
+    if (!best) return null;
+    const b = best as { r: number; g: number; b: number; n: number };
+    const r = Math.round(b.r / b.n), g = Math.round(b.g / b.n), bl = Math.round(b.b / b.n);
+    const hex = (n: number) => n.toString(16).padStart(2, "0");
+    return `#${hex(r)}${hex(g)}${hex(bl)}`;
+  } catch {
+    return null;
+  }
 }
 
 function Index() {
