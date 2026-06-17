@@ -478,7 +478,10 @@ function Index() {
     if (!p || !canvas) return;
     const dpr = 2;
     canvas.width = p.w * dpr; canvas.height = p.h * dpr;
-    canvas.style.width = "100%"; canvas.style.height = "auto";
+    // Let CSS handle sizing; aspect-ratio on the wrapper preserves shape.
+    canvas.style.width = "100%";
+    canvas.style.height = "auto";
+    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -499,7 +502,12 @@ function Index() {
     // Render at 2x so text stays crisp when the user zooms in.
     const dpr = 2;
     canvas.width = p.w * dpr; canvas.height = p.h * dpr;
-    canvas.style.width = `${p.w}px`; canvas.style.height = `${p.h}px`;
+    // Don't pin pixel dims — let CSS scale the canvas while preserving the
+    // intrinsic aspect ratio. Fixing both width & height in px in combination
+    // with max-width/max-height in CSS was warping the displayed image.
+    canvas.style.width = "";
+    canvas.style.height = "";
+    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
