@@ -1234,7 +1234,7 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .single-page-nav button { background: var(--ink); color: var(--paper); width: 34px; height: 34px; font-size: 16px; border-radius: 4px; }
 .single-page-nav button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
 .canvas-wrap { position: relative; max-width: 100%; box-shadow: 0 4px 24px rgba(26,26,31,0.15); line-height: 0; cursor: zoom-in; }
-.canvas-wrap canvas { max-width: 100%; max-height: 78vh; display: block; }
+.canvas-wrap canvas { width: 100%; height: auto; max-height: 78vh; display: block; object-fit: contain; }
 .compare-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
 
 /* Sheet backdrop — hidden on desktop, visible on mobile under the sheet */
@@ -1249,7 +1249,7 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .lb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .lb-back { font-size: 14px; }
 .lb-stage { width: 100% !important; height: 100% !important; }
-.lb-stage canvas { max-width: 100%; max-height: calc(100dvh - 160px); display: block; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
+.lb-stage canvas { max-width: 100%; max-height: calc(100dvh - 160px); height: auto; width: auto; display: block; object-fit: contain; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
 .lb-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 48px; height: 64px; background: rgba(0,0,0,0.45); color: var(--paper); border: 1px solid rgba(247,244,237,0.2); font-size: 26px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 2; }
 .lb-nav:hover:not(:disabled) { background: rgba(0,0,0,0.7); }
 .lb-nav:disabled { opacity: 0.25; cursor: not-allowed; }
@@ -1267,7 +1267,10 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
   .sidebar { width: 100%; max-height: 50vh; border-right: none; border-bottom: 1px solid var(--line); }
   /* On mobile, hide the sidebar entirely — its contents are inside the sheet via the page itself */
   .main { flex: 1; min-height: 0; position: relative; }
-  .topbar { padding: 10px 14px; }
+  /* The topbar's status + view toggle are duplicated inside the sheet-backdrop,
+     which sits behind the draggable sheet. Hide the topbar on mobile so the
+     controls live in exactly one place and the backdrop has the full width. */
+  .topbar { display: none; }
   .viewer {
     position: fixed;
     left: 0; right: 0; bottom: 0;
@@ -1284,8 +1287,8 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
     touch-action: pan-y;
   }
   /* Snap points — translateY values mirror snapTop() in JS */
-  .viewer.sheet-snap-0 { transform: translateY(62dvh); }
-  .viewer.sheet-snap-1 { transform: translateY(18dvh); }
+  .viewer.sheet-snap-0 { transform: translateY(78dvh); }
+  .viewer.sheet-snap-1 { transform: translateY(35dvh); }
   .viewer.sheet-snap-2 { transform: translateY(0); }
   .viewer .drag-handle {
     display: flex; justify-content: center; align-items: center;
