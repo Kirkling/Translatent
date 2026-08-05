@@ -834,26 +834,27 @@ function Index() {
               className={`dropzone${drag ? " drag" : ""}`}
               tabIndex={0}
               role="button"
-              aria-label="Choose a CBZ file"
+              aria-label="Choose a CBZ archive or image files"
               onClick={() => fileInputRef.current?.click()}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInputRef.current?.click(); } }}
               onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
               onDragEnter={(e) => { e.preventDefault(); setDrag(true); }}
               onDragLeave={() => setDrag(false)}
-              onDrop={(e) => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files[0]; if (f) void handleFile(f); }}
+              onDrop={(e) => { e.preventDefault(); setDrag(false); void handleFiles(e.dataTransfer.files); }}
             >
               <span className="icon">⌸</span>
               <span className="label">
-                {fileLabel ? "Drop another .cbz, or click to browse" : "Drop a .cbz file, or click to browse"}
+                {fileLabel ? "Drop another file, or click to browse" : "Drop a .cbz or JPG/PNG, or click to browse"}
               </span>
-              <span className="hint">CBZ archives of image pages only</span>
+              <span className="hint">CBZ/ZIP archives, or JPG &amp; PNG images (multi-select ok)</span>
             </div>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".cbz,.zip"
+              accept=".cbz,.zip,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+              multiple
               style={{ display: "none" }}
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); }}
+              onChange={(e) => { if (e.target.files?.length) void handleFiles(e.target.files); e.target.value = ""; }}
             />
             {fileLabel && (
               <>
