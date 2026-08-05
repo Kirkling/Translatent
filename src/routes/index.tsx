@@ -383,6 +383,35 @@ function Index() {
     await ingestArchive(file, file.name, file.size, file.lastModified);
   }, [ingestArchive]);
 
+  // ---- Accept loose JPG/PNG images (single or multiple) by packing them into an in-memory archive
+  const handleFiles = useCallback(async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (!files.length) return;
+    const isImage = (f: File) =>
+      /^image\//i.test(f.type) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name);
+    const images = files.filter(isImage);
+    const archive = files.find((f) => /\.(cbz|zip)$/i.test(f.name));
+    if (images.length === 0) {
+      if (archive) { await handleFile(archive); return; }
+      appendLog("Unsupported file. Use a .cbz archive or JPG/PNG images.", "accent-line");
+      return;
+    }
+    if (archive && images.length === 0) { await handleFile(archive); return; }
+
+    images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    const zip = new JSZip();
+    const pad = String(images.length).length;
+    images.forEach((f, i) => {
+      const ext = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "jpg").toLowerCase();
+      zip.file(`${String(i + 1).padStart(pad, "0")}-${f.name.replace(/\.[^.]+$/, "")}.${ext}`, f);
+    });
+    const blob = await zip.generateAsync({ type: "blob" });
+    const name = images.length === 1 ? images[0].name : `${images.length} images`;
+    const size = images.reduce((s, f) => s + f.size, 0);
+    const lastMod = images.reduce((m, f) => Math.max(m, f.lastModified), 0);
+    await ingestArchive(blob, name, size, lastMod);
+  }, [appendLog, handleFile, ingestArchive]);
+
   // ---- On boot: try to restore the last opened file from IDB
   const triedRestoreRef = useRef(false);
   useEffect(() => {
