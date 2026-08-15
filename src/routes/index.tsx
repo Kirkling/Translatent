@@ -35,11 +35,22 @@ export const Route = createFileRoute("/")({
 
 type PageStatus = "pending" | "processing" | "translated" | "skipped";
 type RegionKind = "bubble" | "narration" | "sfx" | "sign" | "freefloat";
+type RegionShape = "rounded" | "ellipse" | "rect" | "irregular" | "none";
+type RegionStyle = "print" | "handwritten" | "brush" | "bold" | "italic";
 type Region = {
   x: number; y: number; w: number; h: number;
   translated: string; bg: string;
   kind: RegionKind;
   hasBackdrop: boolean;
+  shape?: RegionShape;
+  angle?: number;
+  textColor?: string;
+  strokeColor?: string | null;
+  style?: RegionStyle;
+  align?: "left" | "center" | "right";
+  vertical?: boolean;
+  capHeight?: number;
+  lines?: number;
 };
 type Page = {
   name: string;
