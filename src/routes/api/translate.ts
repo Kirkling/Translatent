@@ -73,6 +73,12 @@ async function callGateway(messages: unknown[]) {
   throw new Error(`Rate limited after retries — try again in a minute. (${lastErr})`);
 }
 
+function clampHex(v: unknown, fallback: string) {
+  return typeof v === "string" && /^#?[0-9a-f]{6}$/i.test(v)
+    ? (v.startsWith("#") ? v : `#${v}`)
+    : fallback;
+}
+
 function parseRegions(raw: string, maxW: number, maxH: number) {
   let cleaned = raw.trim().replace(/^```(json)?/i, "").replace(/```$/, "").trim();
   // try to extract a JSON array if model added prose
@@ -91,17 +97,33 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     translated: string; bg: string;
     kind: "bubble" | "narration" | "sfx" | "sign" | "freefloat";
     hasBackdrop: boolean;
+    shape: "rounded" | "ellipse" | "rect" | "irregular" | "none";
+    angle: number;
+    textColor: string;
+    strokeColor: string | null;
+    style: "print" | "handwritten" | "brush" | "bold" | "italic";
+    align: "left" | "center" | "right";
+    vertical: boolean;
+    capHeight: number;
+    lines: number;
   };
   const out: Out[] = [];
   for (const r of arr) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
-    const x = Number(o.x);
-    const y = Number(o.y);
-    const w = Number(o.w);
-    const h = Number(o.h);
+    // Coordinates arrive in a resolution-independent 0–1000 grid, so they map
+    // exactly onto the page at ANY resolution (the model sees a downscaled
+    // copy). Values > 1000 are treated as legacy pixel coordinates.
+    const rawX = Number(o.x), rawY = Number(o.y), rawW = Number(o.w), rawH = Number(o.h);
+    const normalized = [rawX, rawY, rawW, rawH].every((n) => Number.isFinite(n) && n <= 1000);
+    const sx = normalized ? maxW / 1000 : 1;
+    const sy = normalized ? maxH / 1000 : 1;
+    const x = rawX * sx;
+    const y = rawY * sy;
+    const w = rawW * sx;
+    const h = rawH * sy;
     const translated = typeof o.translated === "string" ? o.translated : "";
-    const bg = typeof o.bg === "string" && /^#?[0-9a-f]{6}$/i.test(o.bg) ? (o.bg.startsWith("#") ? o.bg : `#${o.bg}`) : "#FFFFFF";
+    const bg = clampHex(o.bg, "#FFFFFF");
     const kindRaw = typeof o.kind === "string" ? o.kind.toLowerCase() : "bubble";
     const kind: Out["kind"] =
       kindRaw === "narration" || kindRaw === "sfx" || kindRaw === "sign" || kindRaw === "freefloat"
@@ -110,6 +132,28 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     const hasBackdrop = typeof o.hasBackdrop === "boolean"
       ? o.hasBackdrop
       : (kind === "bubble" || kind === "narration");
+    const shapeRaw = typeof o.shape === "string" ? o.shape.toLowerCase() : "";
+    const shape: Out["shape"] =
+      shapeRaw === "ellipse" || shapeRaw === "rect" || shapeRaw === "irregular" || shapeRaw === "none" || shapeRaw === "rounded"
+        ? (shapeRaw as Out["shape"])
+        : hasBackdrop ? (kind === "narration" ? "rect" : "ellipse") : "none";
+    const angleRaw = Number(o.angle);
+    const angle = Number.isFinite(angleRaw) ? Math.max(-45, Math.min(45, angleRaw)) : 0;
+    const styleRaw = typeof o.style === "string" ? o.style.toLowerCase() : "";
+    const style: Out["style"] =
+      styleRaw === "handwritten" || styleRaw === "brush" || styleRaw === "bold" || styleRaw === "italic"
+        ? (styleRaw as Out["style"])
+        : "print";
+    const alignRaw = typeof o.align === "string" ? o.align.toLowerCase() : "";
+    const align: Out["align"] = alignRaw === "left" || alignRaw === "right" ? alignRaw : "center";
+    const vertical = o.vertical === true;
+    const capRaw = Number(o.capHeight);
+    // capHeight is reported in the same 0–1000 grid as the box.
+    const capHeight = Number.isFinite(capRaw) && capRaw > 0
+      ? capRaw * (normalized ? maxH / 1000 : 1)
+      : 0;
+    const linesRaw = Number(o.lines);
+    const lines = Number.isFinite(linesRaw) && linesRaw > 0 ? Math.min(12, Math.round(linesRaw)) : 0;
     if (![x, y, w, h].every((n) => Number.isFinite(n))) continue;
     if (w <= 0 || h <= 0) continue;
     if (!translated) continue;
@@ -122,6 +166,17 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
       bg,
       kind,
       hasBackdrop,
+      shape,
+      angle,
+      textColor: clampHex(o.textColor, "#111111"),
+      strokeColor: typeof o.strokeColor === "string" && /^#?[0-9a-f]{6}$/i.test(o.strokeColor)
+        ? clampHex(o.strokeColor, "#FFFFFF")
+        : null,
+      style,
+      align,
+      vertical,
+      capHeight: Math.min(h, capHeight || h * 0.8),
+      lines,
     });
   }
   return out;
