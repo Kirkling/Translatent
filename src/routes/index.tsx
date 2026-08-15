@@ -323,6 +323,18 @@ function Index() {
 
   useEffect(() => { pacingRef.current = pacingMs; }, [pacingMs]);
 
+  // Make sure the hand-lettered / brush faces are rasterizable on canvas
+  // before any overlay is drawn, otherwise they silently fall back.
+  useEffect(() => {
+    const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+    if (!fonts) return;
+    void Promise.all([
+      fonts.load("600 24px 'Caveat'"),
+      fonts.load("400 24px 'Patrick Hand'"),
+      fonts.load("400 24px 'Bangers'"),
+    ]).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
