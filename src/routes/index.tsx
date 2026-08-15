@@ -396,6 +396,7 @@ function Index() {
         if (s && (s.status === "translated" || s.status === "skipped")) {
           p.status = s.status;
           p.regions = (s.regions || []).map((r) => ({
+            ...r,
             x: r.x, y: r.y, w: r.w, h: r.h,
             translated: r.translated, bg: r.bg,
             kind: ((r as { kind?: string }).kind as RegionKind) || "bubble",
