@@ -73,6 +73,12 @@ async function callGateway(messages: unknown[]) {
   throw new Error(`Rate limited after retries — try again in a minute. (${lastErr})`);
 }
 
+function clampHex(v: unknown, fallback: string) {
+  return typeof v === "string" && /^#?[0-9a-f]{6}$/i.test(v)
+    ? (v.startsWith("#") ? v : `#${v}`)
+    : fallback;
+}
+
 function parseRegions(raw: string, maxW: number, maxH: number) {
   let cleaned = raw.trim().replace(/^```(json)?/i, "").replace(/```$/, "").trim();
   // try to extract a JSON array if model added prose
@@ -91,17 +97,33 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     translated: string; bg: string;
     kind: "bubble" | "narration" | "sfx" | "sign" | "freefloat";
     hasBackdrop: boolean;
+    shape: "rounded" | "ellipse" | "rect" | "irregular" | "none";
+    angle: number;
+    textColor: string;
+    strokeColor: string | null;
+    style: "print" | "handwritten" | "brush" | "bold" | "italic";
+    align: "left" | "center" | "right";
+    vertical: boolean;
+    capHeight: number;
+    lines: number;
   };
   const out: Out[] = [];
   for (const r of arr) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
-    const x = Number(o.x);
-    const y = Number(o.y);
-    const w = Number(o.w);
-    const h = Number(o.h);
+    // Coordinates arrive in a resolution-independent 0–1000 grid, so they map
+    // exactly onto the page at ANY resolution (the model sees a downscaled
+    // copy). Values > 1000 are treated as legacy pixel coordinates.
+    const rawX = Number(o.x), rawY = Number(o.y), rawW = Number(o.w), rawH = Number(o.h);
+    const normalized = [rawX, rawY, rawW, rawH].every((n) => Number.isFinite(n) && n <= 1000);
+    const sx = normalized ? maxW / 1000 : 1;
+    const sy = normalized ? maxH / 1000 : 1;
+    const x = rawX * sx;
+    const y = rawY * sy;
+    const w = rawW * sx;
+    const h = rawH * sy;
     const translated = typeof o.translated === "string" ? o.translated : "";
-    const bg = typeof o.bg === "string" && /^#?[0-9a-f]{6}$/i.test(o.bg) ? (o.bg.startsWith("#") ? o.bg : `#${o.bg}`) : "#FFFFFF";
+    const bg = clampHex(o.bg, "#FFFFFF");
     const kindRaw = typeof o.kind === "string" ? o.kind.toLowerCase() : "bubble";
     const kind: Out["kind"] =
       kindRaw === "narration" || kindRaw === "sfx" || kindRaw === "sign" || kindRaw === "freefloat"
@@ -110,6 +132,28 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     const hasBackdrop = typeof o.hasBackdrop === "boolean"
       ? o.hasBackdrop
       : (kind === "bubble" || kind === "narration");
+    const shapeRaw = typeof o.shape === "string" ? o.shape.toLowerCase() : "";
+    const shape: Out["shape"] =
+      shapeRaw === "ellipse" || shapeRaw === "rect" || shapeRaw === "irregular" || shapeRaw === "none" || shapeRaw === "rounded"
+        ? (shapeRaw as Out["shape"])
+        : hasBackdrop ? (kind === "narration" ? "rect" : "ellipse") : "none";
+    const angleRaw = Number(o.angle);
+    const angle = Number.isFinite(angleRaw) ? Math.max(-45, Math.min(45, angleRaw)) : 0;
+    const styleRaw = typeof o.style === "string" ? o.style.toLowerCase() : "";
+    const style: Out["style"] =
+      styleRaw === "handwritten" || styleRaw === "brush" || styleRaw === "bold" || styleRaw === "italic"
+        ? (styleRaw as Out["style"])
+        : "print";
+    const alignRaw = typeof o.align === "string" ? o.align.toLowerCase() : "";
+    const align: Out["align"] = alignRaw === "left" || alignRaw === "right" ? alignRaw : "center";
+    const vertical = o.vertical === true;
+    const capRaw = Number(o.capHeight);
+    // capHeight is reported in the same 0–1000 grid as the box.
+    const capHeight = Number.isFinite(capRaw) && capRaw > 0
+      ? capRaw * (normalized ? maxH / 1000 : 1)
+      : 0;
+    const linesRaw = Number(o.lines);
+    const lines = Number.isFinite(linesRaw) && linesRaw > 0 ? Math.min(12, Math.round(linesRaw)) : 0;
     if (![x, y, w, h].every((n) => Number.isFinite(n))) continue;
     if (w <= 0 || h <= 0) continue;
     if (!translated) continue;
@@ -122,6 +166,17 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
       bg,
       kind,
       hasBackdrop,
+      shape,
+      angle,
+      textColor: clampHex(o.textColor, "#111111"),
+      strokeColor: typeof o.strokeColor === "string" && /^#?[0-9a-f]{6}$/i.test(o.strokeColor)
+        ? clampHex(o.strokeColor, "#FFFFFF")
+        : null,
+      style,
+      align,
+      vertical,
+      capHeight: Math.min(h, capHeight || h * 0.8),
+      lines,
     });
   }
   return out;
@@ -189,8 +244,9 @@ export const Route = createFileRoute("/api/translate")({
           const system = [
             `You are a manga text-replacement assistant translating from ${srcName} to ${tgtName}. ${scopeRules}`,
             `WORKFLOW — perform TWO passes deterministically:\n  PASS 1: Scan the page in correct reading order (right-to-left top-to-bottom for Japanese/Chinese, left-to-right top-to-bottom for Korean/English). Enumerate EVERY text region of any kind: dialogue bubbles, narration boxes, sound effects (large and small), signs, labels, handwritten/floating text, off-panel whispers, asterisked notes, even single-character interjections.\n  PASS 2: Re-scan the page from the opposite corner to catch any region missed in pass 1 (especially small SFX and edge text). Merge the two lists; do NOT duplicate regions whose boxes overlap by more than 50%.\n  Then translate the whole page together as a single cohesive scene — pronouns, names, honorifics, and tone must stay consistent across bubbles. Emit one JSON entry per unique region. Be exhaustive: missing a bubble is worse than including a borderline one.`,
-            `For each region report: pixel bounding box (x, y, w, h — origin at top-left); ${tgtName} translation; a single representative "bg" hex color sampled JUST OUTSIDE the glyphs (the speech-bubble fill or panel background); a "kind" label — one of "bubble" (rounded speech bubble), "narration" (boxed narrator caption), "sfx" (sound effect / onomatopoeia drawn directly on art), "sign" (text on a sign / object), "freefloat" (handwritten or floating text with no backdrop); and a boolean "hasBackdrop" — true ONLY if the original text sits on a solid opaque fill (white speech bubble, solid caption box). If the original text is drawn directly on artwork with NO solid plate behind it (most SFX, handwritten asides, signs without a back-plate), set hasBackdrop=false — the renderer will erase the original and place the translation without any backdrop, matching the source style.`,
-            `Bounding boxes must TIGHTLY hug the actual glyphs (no extra whitespace, no margin). The box height should equal the cap-height of the original lettering so the translated text renders at the same visual size as the original.`,
+            `COORDINATE SYSTEM — MANDATORY: report every geometry value in a resolution-independent grid where the FULL image width is exactly 1000 units and the FULL image height is exactly 1000 units, origin at the TOP-LEFT corner. x = left edge, y = top edge, w = width, h = height, all in that 0–1000 grid (decimals allowed, be precise to 1 decimal). Never emit raw pixel values. Bounding boxes must TIGHTLY hug the actual glyph block — no whitespace padding, no bubble margin: the box is the ink extent of the source text only.`,
+            `For each region also report:\n  • "translated": the ${tgtName} text.\n  • "bg": hex color of the surface directly BEHIND the glyphs (bubble fill, banner plate, or artwork tone).\n  • "textColor": hex color of the original glyph ink.\n  • "strokeColor": hex color of the glyph outline/halo if the lettering has one, otherwise null.\n  • "kind": "bubble" | "narration" | "sfx" | "sign" | "freefloat".\n  • "shape": the container's true silhouette — "ellipse" (oval/round bubble), "rounded" (rounded rectangle), "rect" (hard-edged box or subtitle banner), "irregular" (spiky/burst/cloud bubble or hand-drawn outline), "none" (text sits straight on artwork).\n  • "hasBackdrop": true ONLY if the source text sits on a solid opaque plate (white bubble, filled caption bar). SFX, handwritten asides and text on raw art are false.\n  • "angle": rotation of the text baseline in degrees, -45..45, positive = clockwise. 0 for horizontal text.\n  • "style": "print" (typeset lettering), "handwritten" (casual hand lettering, marginal notes, hand-drawn asides), "brush" (thick inked brush strokes / dramatic SFX), "bold", or "italic". Judge from stroke weight and irregularity — hand-drawn and handwritten lettering MUST be labelled "handwritten" or "brush" so it can be reproduced in a matching hand-lettered face.\n  • "align": "left" | "center" | "right" — how the original lines are justified inside the box.\n  • "vertical": true if the source text runs top-to-bottom in vertical columns.\n  • "capHeight": the height of ONE line of the original lettering, in the same 0–1000 grid (this fixes the replacement font size exactly).\n  • "lines": how many text lines the original block occupies.`,
+            `Precision matters more than speed: measure each box against the image edges before reporting it, and double-check that x+w ≤ 1000 and y+h ≤ 1000.`,
             priorContext
               ? `PRIOR CONTEXT — these were the last lines translated on the previous page, use them for continuity (do not re-translate them):\n${priorContext}`
               : "",
@@ -199,7 +255,7 @@ export const Route = createFileRoute("/api/translate")({
             customInstructions.trim()
               ? `USER INSTRUCTIONS — follow these in addition to the rules above:\n${customInstructions.trim()}`
               : "",
-            `Respond ONLY with a JSON array, no prose, no markdown fences. Each element: {"x":number,"y":number,"w":number,"h":number,"translated":"...","bg":"#RRGGBB","kind":"bubble|narration|sfx|sign|freefloat","hasBackdrop":true|false}. If there is no text at all, respond with [].`,
+            `Respond ONLY with a JSON array, no prose, no markdown fences. Each element: {"x":number,"y":number,"w":number,"h":number,"translated":"...","bg":"#RRGGBB","textColor":"#RRGGBB","strokeColor":"#RRGGBB"|null,"kind":"bubble|narration|sfx|sign|freefloat","shape":"ellipse|rounded|rect|irregular|none","hasBackdrop":true|false,"angle":number,"style":"print|handwritten|brush|bold|italic","align":"left|center|right","vertical":true|false,"capHeight":number,"lines":number}. If there is no text at all, respond with [].`,
           ]
             .filter(Boolean)
             .join("\n\n");
@@ -212,7 +268,7 @@ export const Route = createFileRoute("/api/translate")({
                 { type: "image_url", image_url: { url: dataUrl } },
                 {
                   type: "text",
-                  text: `Image size: ${width}x${height} pixels. Find all text regions and translate to ${tgtName}. Respond with ONLY the JSON array.`,
+                  text: `Source page resolution: ${width}x${height} pixels (aspect ratio ${(width / Math.max(1, height)).toFixed(4)}). Report all geometry in the 0–1000 normalized grid described above, not in pixels. Find every text region, capture its exact box, shape, rotation, colors and lettering style, and translate to ${tgtName}. Respond with ONLY the JSON array.`,
                 },
               ],
             },

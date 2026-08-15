@@ -35,11 +35,22 @@ export const Route = createFileRoute("/")({
 
 type PageStatus = "pending" | "processing" | "translated" | "skipped";
 type RegionKind = "bubble" | "narration" | "sfx" | "sign" | "freefloat";
+type RegionShape = "rounded" | "ellipse" | "rect" | "irregular" | "none";
+type RegionStyle = "print" | "handwritten" | "brush" | "bold" | "italic";
 type Region = {
   x: number; y: number; w: number; h: number;
   translated: string; bg: string;
   kind: RegionKind;
   hasBackdrop: boolean;
+  shape?: RegionShape;
+  angle?: number;
+  textColor?: string;
+  strokeColor?: string | null;
+  style?: RegionStyle;
+  align?: "left" | "center" | "right";
+  vertical?: boolean;
+  capHeight?: number;
+  lines?: number;
 };
 type Page = {
   name: string;
@@ -116,25 +127,52 @@ function pickInk(hex: string) {
   return lum > 0.55 ? "#111111" : "#F7F4ED";
 }
 
+function fontFamilyFor(style: RegionStyle, kind: RegionKind) {
+  if (style === "handwritten") return `'Caveat', 'Patrick Hand', 'Segoe Script', cursive`;
+  if (style === "brush") return `'Bangers', 'Impact', 'Archivo Narrow', sans-serif`;
+  if (kind === "sfx") return `'Bangers', 'Impact', 'Archivo Narrow', sans-serif`;
+  return `'Inter', 'Helvetica Neue', Arial, sans-serif`;
+}
+
 function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   const { x, y, w, h, translated, bg, kind, hasBackdrop } = r;
+  const shape: RegionShape = r.shape ?? (hasBackdrop ? (kind === "narration" ? "rect" : "ellipse") : "none");
+  const style: RegionStyle = r.style ?? "print";
+  const angle = ((r.angle ?? 0) * Math.PI) / 180;
+  const align = r.align ?? "center";
   ctx.save();
-  const family = `'Inter', 'Helvetica Neue', Arial, sans-serif`;
+  const family = fontFamilyFor(style, kind);
   const fill = bg || "#FFFFFF";
-  const ink = pickInk(fill);
+  let ink = r.textColor || pickInk(fill);
+
+  // Rotate around the box centre so slanted / tilted lettering is matched.
+  const ccx = x + w / 2, ccy = y + h / 2;
+  if (angle) {
+    ctx.translate(ccx, ccy);
+    ctx.rotate(angle);
+    ctx.translate(-ccx, -ccy);
+  }
 
   if (hasBackdrop) {
-    // Redraw bubble at the SAME dimensions as the original so it overlays cleanly.
-    // Only a tiny pad so anti-aliased edges of the original glyphs are covered.
+    // Redraw the plate at the SAME geometry as the original, matching its
+    // measured silhouette so the overlay reads as part of the artwork.
     const pad = Math.max(1, Math.min(w, h) * 0.02);
     const bx = x - pad, by = y - pad, bw = w + pad * 2, bh = h + pad * 2;
-    const radius = kind === "narration" ? 2 : Math.max(4, Math.min(bw, bh) * 0.22);
     ctx.fillStyle = fill;
-    if (typeof ctx.roundRect === "function") {
-      ctx.beginPath();
-      ctx.roundRect(bx, by, bw, bh, radius);
+    ctx.beginPath();
+    if (shape === "ellipse" || shape === "irregular") {
+      ctx.ellipse(bx + bw / 2, by + bh / 2, (bw / 2) * 1.08, (bh / 2) * 1.12, 0, 0, Math.PI * 2);
       ctx.fill();
-    } else ctx.fillRect(bx, by, bw, bh);
+    } else if (shape === "rect") {
+      ctx.fillRect(bx, by, bw, bh);
+    } else {
+      const radius = Math.max(2, Math.min(bw, bh) * 0.22);
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(bx, by, bw, bh, radius);
+        ctx.fill();
+      } else ctx.fillRect(bx, by, bw, bh);
+    }
+    if (!r.textColor) ink = pickInk(fill);
   } else {
     // No engineered bubble. Sample the ring of pixels JUST outside the bbox
     // to learn the underlying surface color (the artwork backdrop OR a solid
@@ -147,44 +185,52 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
     const pad = Math.max(1, Math.min(w, h) * 0.04);
     ctx.fillStyle = fillColor;
     ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
-    // Update ink for legibility against the freshly painted rectangle.
-    ctx.fillStyle = pickInk(fillColor);
+    // Keep the original ink color when we know it, else stay legible.
+    ink = r.textColor || pickInk(fillColor);
   }
 
-  if (hasBackdrop) ctx.fillStyle = ink;
+  ctx.fillStyle = ink;
   ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
+  ctx.textAlign = align;
   const padX = Math.max(2, w * 0.04);
   const padY = Math.max(1, h * 0.04);
   const maxWidth = w - padX * 2;
   const maxHeight = h - padY * 2;
-  // Match the original text's pixel height. The bbox should hug the glyphs,
-  // so use the box height itself as the starting font size and only shrink
-  // if the translation overflows.
-  let fontSize = Math.min(
-    Math.floor(h * (kind === "sfx" ? 0.95 : 0.78)),
-    Math.max(12, Math.floor(Math.sqrt((w * h) / Math.max(6, translated.length)) * 1.4)),
-  );
+  // Start from the measured cap-height of the ORIGINAL lettering so the
+  // replacement renders at the same optical size, then shrink only to fit.
+  const measuredCap = r.capHeight && r.capHeight > 0 ? r.capHeight : h / Math.max(1, r.lines ?? 1);
+  let fontSize = Math.max(9, Math.floor(measuredCap * (style === "handwritten" ? 1.15 : 1.0)));
+  fontSize = Math.min(fontSize, Math.floor(h * 1.05));
   let lines: string[] = [];
   const lineGap = 1.18;
-  const weight = kind === "sfx" ? 800 : kind === "narration" ? 500 : 600;
-  const display = kind === "sfx" ? translated.toUpperCase() : translated;
+  const weight = style === "bold" || style === "brush" || kind === "sfx" ? 800
+    : kind === "narration" ? 500
+    : style === "handwritten" ? 600
+    : 600;
+  const slant = style === "italic" ? "italic " : "";
+  const display = kind === "sfx" || style === "brush" ? translated.toUpperCase() : translated;
   for (; fontSize >= 9; fontSize -= 1) {
-    ctx.font = `${weight} ${fontSize}px ${family}`;
+    ctx.font = `${slant}${weight} ${fontSize}px ${family}`;
     lines = wrapText(ctx, display, maxWidth);
     const totalHeight = lines.length * fontSize * lineGap;
     const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
     if (totalHeight <= maxHeight && widest <= maxWidth) break;
     if (fontSize === 9) break;
   }
-  ctx.font = `${weight} ${fontSize}px ${family}`;
+  ctx.font = `${slant}${weight} ${fontSize}px ${family}`;
   const lineHeight = fontSize * lineGap;
   const totalTextHeight = (lines.length - 1) * lineHeight + fontSize;
   const cy = y + h / 2 - totalTextHeight / 2 + fontSize / 2;
-  const cx = x + w / 2;
+  const cx = align === "left" ? x + padX : align === "right" ? x + w - padX : x + w / 2;
 
-  // No stroke / shadow — user wants overlay to match original style exactly.
+  // Only stroke when the ORIGINAL lettering had an outline (e.g. SFX halos).
+  if (r.strokeColor) {
+    ctx.strokeStyle = r.strokeColor;
+    ctx.lineWidth = Math.max(1, fontSize * 0.08);
+    ctx.lineJoin = "round";
+  }
   for (let i = 0; i < lines.length; i++) {
+    if (r.strokeColor) ctx.strokeText(lines[i], cx, cy + i * lineHeight, maxWidth);
     ctx.fillText(lines[i], cx, cy + i * lineHeight, maxWidth);
   }
   ctx.restore();
@@ -277,6 +323,18 @@ function Index() {
 
   useEffect(() => { pacingRef.current = pacingMs; }, [pacingMs]);
 
+  // Make sure the hand-lettered / brush faces are rasterizable on canvas
+  // before any overlay is drawn, otherwise they silently fall back.
+  useEffect(() => {
+    const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+    if (!fonts) return;
+    void Promise.all([
+      fonts.load("600 24px 'Caveat'"),
+      fonts.load("400 24px 'Patrick Hand'"),
+      fonts.load("400 24px 'Bangers'"),
+    ]).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
@@ -350,6 +408,7 @@ function Index() {
         if (s && (s.status === "translated" || s.status === "skipped")) {
           p.status = s.status;
           p.regions = (s.regions || []).map((r) => ({
+            ...r,
             x: r.x, y: r.y, w: r.w, h: r.h,
             translated: r.translated, bg: r.bg,
             kind: ((r as { kind?: string }).kind as RegionKind) || "bubble",
