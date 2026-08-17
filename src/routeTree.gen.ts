@@ -10,11 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiTranslateTextRouteImport } from './routes/api/translate-text'
 import { Route as ApiTranslateRouteImport } from './routes/api/translate'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTranslateTextRoute = ApiTranslateTextRouteImport.update({
+  id: '/api/translate-text',
+  path: '/api/translate-text',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTranslateRoute = ApiTranslateRouteImport.update({
@@ -26,27 +32,31 @@ const ApiTranslateRoute = ApiTranslateRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/translate': typeof ApiTranslateRoute
+  '/api/translate-text': typeof ApiTranslateTextRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/translate': typeof ApiTranslateRoute
+  '/api/translate-text': typeof ApiTranslateTextRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/translate': typeof ApiTranslateRoute
+  '/api/translate-text': typeof ApiTranslateTextRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/translate'
+  fullPaths: '/' | '/api/translate' | '/api/translate-text'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/translate'
-  id: '__root__' | '/' | '/api/translate'
+  to: '/' | '/api/translate' | '/api/translate-text'
+  id: '__root__' | '/' | '/api/translate' | '/api/translate-text'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiTranslateRoute: typeof ApiTranslateRoute
+  ApiTranslateTextRoute: typeof ApiTranslateTextRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -56,6 +66,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/translate-text': {
+      id: '/api/translate-text'
+      path: '/api/translate-text'
+      fullPath: '/api/translate-text'
+      preLoaderRoute: typeof ApiTranslateTextRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/translate': {
@@ -71,6 +88,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiTranslateRoute: ApiTranslateRoute,
+  ApiTranslateTextRoute: ApiTranslateTextRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
