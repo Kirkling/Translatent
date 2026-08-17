@@ -261,6 +261,9 @@ function Index() {
   const sheetRef = useRef<HTMLDivElement>(null);
   const sheetDrag = useRef<{ startY: number; startSnap: 0 | 1 | 2; moved: boolean } | null>(null);
 
+  const [doc, setDoc] = useState<(DocBlocks & { translations: string[] }) | null>(null);
+  const [docBusy, setDocBusy] = useState(false);
+
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
   const [textOnly, setTextOnly] = useState(true);
@@ -402,20 +405,50 @@ function Index() {
     await ingestArchive(file, file.name, file.size, file.lastModified);
   }, [ingestArchive]);
 
-  // ---- Accept loose JPG/PNG images (single or multiple) by packing them into an in-memory archive
+  // ---- Document ingestion: Word / PowerPoint / plain text -----------------
+  const handleTextDoc = useCallback(async (file: File) => {
+    setStatusText("Reading document…"); setStatusMode("busy");
+    appendLog(`Opening ${file.name}…`);
+    try {
+      const parsed = await extractDocText(file);
+      setDoc({ ...parsed, translations: [] });
+      setStatusText(`${parsed.blocks.length} text blocks loaded`); setStatusMode("done");
+      appendLog(`Loaded ${parsed.blocks.length} text blocks from ${file.name}.`, "ok-line");
+    } catch (err) {
+      appendLog(`Failed to read document: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
+      setStatusText("Failed to read document"); setStatusMode("");
+    }
+  }, [appendLog]);
+
+  // ---- Accept archives, loose images, and PDFs (rendered to page images)
   const handleFiles = useCallback(async (fileList: FileList | File[]) => {
     const files = Array.from(fileList);
     if (!files.length) return;
-    const isImage = (f: File) =>
-      /^image\//i.test(f.type) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name);
-    const images = files.filter(isImage);
-    const archive = files.find((f) => /\.(cbz|zip)$/i.test(f.name));
+
+    const textDoc = files.find(isTextDoc);
+    if (textDoc) { await handleTextDoc(textDoc); return; }
+
+    const pdf = files.find(isPdf);
+    let images = files.filter(isImage);
+    if (pdf) {
+      setStatusText("Rendering PDF…"); setStatusMode("busy");
+      appendLog(`Rendering ${pdf.name} to page images…`);
+      try {
+        const rendered = await pdfToImages(pdf, (d, t) => setStatusText(`Rendering PDF page ${d}/${t}`));
+        images = images.concat(rendered);
+        appendLog(`Rendered ${rendered.length} PDF page${rendered.length === 1 ? "" : "s"}.`, "ok-line");
+      } catch (err) {
+        appendLog(`Could not render PDF: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
+        setStatusText("Failed to read PDF"); setStatusMode(""); return;
+      }
+    }
+
+    const archive = files.find(isArchive);
     if (images.length === 0) {
       if (archive) { await handleFile(archive); return; }
-      appendLog("Unsupported file. Use a .cbz archive or JPG/PNG images.", "accent-line");
+      appendLog("Unsupported file. Use CBZ, PDF, JPG/PNG, DOCX, PPTX or TXT.", "accent-line");
       return;
     }
-    if (archive && images.length === 0) { await handleFile(archive); return; }
 
     images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     const zip = new JSZip();
@@ -425,11 +458,11 @@ function Index() {
       zip.file(`${String(i + 1).padStart(pad, "0")}-${f.name.replace(/\.[^.]+$/, "")}.${ext}`, f);
     });
     const blob = await zip.generateAsync({ type: "blob" });
-    const name = images.length === 1 ? images[0].name : `${images.length} images`;
-    const size = images.reduce((s, f) => s + f.size, 0);
-    const lastMod = images.reduce((m, f) => Math.max(m, f.lastModified), 0);
+    const name = pdf ? pdf.name : images.length === 1 ? images[0].name : `${images.length} images`;
+    const size = pdf ? pdf.size : images.reduce((s, f) => s + f.size, 0);
+    const lastMod = pdf ? pdf.lastModified : images.reduce((m, f) => Math.max(m, f.lastModified), 0);
     await ingestArchive(blob, name, size, lastMod);
-  }, [appendLog, handleFile, ingestArchive]);
+  }, [appendLog, handleFile, handleTextDoc, ingestArchive]);
 
   // ---- On boot: try to restore the last opened file from IDB
   const triedRestoreRef = useRef(false);
