@@ -1381,6 +1381,11 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .view-toggle button.active { background: var(--ink); color: var(--paper); }
 .viewer { flex: 1; overflow-y: auto; padding: 24px; position: relative; }
 .drag-handle { display: none; }
+.doc-view { padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+.doc-view .doc-title { font-weight: 700; font-size: 15px; opacity: .8; }
+.doc-block { border: 1px solid rgba(0,0,0,.08); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,.5); }
+.doc-src { white-space: pre-wrap; font-size: 13px; opacity: .62; }
+.doc-tgt { white-space: pre-wrap; font-size: 14px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,.12); }
 .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); gap: 8px; padding: 20px; }
 .empty-state .glyph { font-family: 'Archivo Narrow', sans-serif; font-size: 64px; font-weight: 800; color: var(--panel); line-height: 1; }
 .empty-state .msg { font-size: 14px; max-width: 320px; line-height: 1.6; }
