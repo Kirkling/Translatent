@@ -1,16 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-
-const LANG_NAMES: Record<string, string> = {
-  auto: "the source language (auto-detect Japanese, Chinese, or Korean)",
-  ja: "Japanese",
-  zh: "Chinese",
-  ko: "Korean",
-  en: "English",
-  es: "Spanish",
-  fr: "French",
-  de: "German",
-  pt: "Portuguese",
-};
+import { LANG_NAMES } from "@/lib/langs";
 
 const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
