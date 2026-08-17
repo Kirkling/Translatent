@@ -826,6 +826,70 @@ function Index() {
     appendLog("Cleared saved session.", "accent-line");
   }, [fileLabel, pages, appendLog]);
 
+  // ---- Document translation ------------------------------------------------
+  const translateDoc = useCallback(async () => {
+    if (!doc || docBusy) return;
+    setDocBusy(true);
+    setStatusText("Translating document…"); setStatusMode("busy");
+    const out: string[] = [];
+    const CHUNK = 12;
+    try {
+      for (let i = 0; i < doc.blocks.length; i += CHUNK) {
+        const slice = doc.blocks.slice(i, i + CHUNK);
+        const res = await fetch("/api/translate-text", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ blocks: slice, srcLang, tgtLang, glossary, customInstructions }),
+        });
+        const text = await res.text();
+        let data: { translations?: string[]; error?: string } = {};
+        try { data = JSON.parse(text) as typeof data; }
+        catch { throw new Error("Server returned a non-JSON response — try again."); }
+        if (data.error) throw new Error(data.error);
+        out.push(...(data.translations || slice.map(() => "")));
+        setDoc((d) => (d ? { ...d, translations: out.slice() } : d));
+        appendLog(`Translated blocks ${i + 1}–${Math.min(doc.blocks.length, i + CHUNK)}.`, "ok-line");
+        if (i + CHUNK < doc.blocks.length) await new Promise((r) => setTimeout(r, 900));
+      }
+      setStatusText("Document translated"); setStatusMode("done");
+    } catch (err) {
+      appendLog(`Document: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
+      setStatusText("Document translation failed"); setStatusMode("");
+    }
+    setDocBusy(false);
+  }, [doc, docBusy, srcLang, tgtLang, glossary, customInstructions, appendLog]);
+
+  // ---- Bilingual transcript (original + translation) ------------------------
+  const downloadTranscript = useCallback(() => {
+    const lines: string[] = [];
+    const title = doc?.name || fileLabel?.name || "transcript";
+    lines.push(`Koe/Box transcript — ${title}`, `Generated ${new Date().toLocaleString()}`, "");
+    if (doc) {
+      doc.blocks.forEach((b, i) => {
+        lines.push(`--- Block ${i + 1} ---`, "ORIGINAL:", b, "", "TRANSLATION:", doc.translations[i] || "(not translated)", "");
+      });
+    } else {
+      pages.forEach((p, i) => {
+        if (p.status !== "translated" || !p.regions.length) return;
+        lines.push(`--- Page ${i + 1} (${p.name}) ---`);
+        p.regions.forEach((r, k) => {
+          lines.push(`[${k + 1}] ${r.kind}`);
+          if (r.original) lines.push(`  ORIGINAL:    ${r.original}`);
+          lines.push(`  TRANSLATION: ${r.translated}`);
+        });
+        lines.push("");
+      });
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.replace(/\.[^.]+$/, "")}.transcript.txt`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    appendLog("Transcript downloaded.", "ok-line");
+  }, [doc, pages, fileLabel, appendLog]);
+
   const current = pages[currentIndex];
   const hasTranslation = !!current && current.status === "translated" && current.regions.length > 0;
   const translatedCount = pages.filter((p) => p.status === "translated").length;
@@ -896,14 +960,14 @@ function Index() {
             >
               <span className="icon">⌸</span>
               <span className="label">
-                {fileLabel ? "Drop another file, or click to browse" : "Drop a .cbz or JPG/PNG, or click to browse"}
+                {fileLabel || doc ? "Drop another file, or click to browse" : "Drop a CBZ, PDF, image or document"}
               </span>
-              <span className="hint">CBZ/ZIP archives, or JPG &amp; PNG images (multi-select ok)</span>
+              <span className="hint">CBZ/ZIP · PDF · JPG/PNG/WebP · DOCX · PPTX · TXT/MD/CSV</span>
             </div>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".cbz,.zip,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+              accept=".cbz,.zip,.pdf,.docx,.pptx,.txt,.md,.csv,.rtf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
               multiple
               style={{ display: "none" }}
               onChange={(e) => { if (e.target.files?.length) void handleFiles(e.target.files); e.target.value = ""; }}
@@ -1001,6 +1065,16 @@ function Index() {
                 <a className="download-link" href={downloadUrl} download={downloadName}>
                   ↓ Download {downloadName}
                 </a>
+              )}
+              {doc && (
+                <button className="btn-primary" disabled={docBusy} onClick={translateDoc}>
+                  {docBusy ? "Translating document…" : `Translate Document (${doc.blocks.length} blocks)`}
+                </button>
+              )}
+              {(doc || translatedCount > 0) && (
+                <button className="btn-secondary" onClick={downloadTranscript}>
+                  ↓ Download Transcript (original + translation)
+                </button>
               )}
             </div>
             <div className="progress-mini">
