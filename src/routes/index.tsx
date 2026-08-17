@@ -1139,7 +1139,18 @@ function Index() {
             >
               <span className="grip" />
             </div>
-            {!pages.length && (
+            {doc && !pages.length && (
+              <div className="doc-view">
+                <div className="doc-title">{doc.name}</div>
+                {doc.blocks.map((b, i) => (
+                  <div className="doc-block" key={i}>
+                    <div className="doc-src">{b}</div>
+                    {doc.translations[i] && <div className="doc-tgt">{doc.translations[i]}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {!pages.length && !doc && (
               <div className="empty-state">
                 <div className="glyph">字</div>
                 <div className="msg">

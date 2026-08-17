@@ -8,7 +8,7 @@ const STORE = "files";
 
 export type StoredRegion = {
   x: number; y: number; w: number; h: number;
-  translated: string; bg: string;
+  translated: string; original?: string; bg: string;
   kind?: string; hasBackdrop?: boolean;
 };
 
