@@ -67,17 +67,6 @@ type Page = {
 };
 type LogLine = { text: string; cls?: "ok-line" | "accent-line" | "skip-line" };
 
-const LANG_NAMES: Record<string, string> = {
-  auto: "the source language",
-  ja: "Japanese",
-  zh: "Chinese",
-  ko: "Korean",
-  en: "English",
-  es: "Spanish",
-  fr: "French",
-  de: "German",
-  pt: "Portuguese",
-};
 
 function loadImage(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
@@ -902,19 +891,17 @@ function Index() {
             <div className="lang-row">
               <select value={srcLang} onChange={(e) => setSrcLang(e.target.value)}>
                 <option value="auto">Auto‑detect source</option>
-                <option value="ja">Japanese</option>
-                <option value="zh">Chinese (Simplified/Traditional)</option>
-                <option value="ko">Korean</option>
+                {LANGS.map((l) => (
+                  <option key={l.code} value={l.code}>{l.label}</option>
+                ))}
               </select>
             </div>
             <div className="lang-row">
               <span className="lang-arrow">→</span>
               <select value={tgtLang} onChange={(e) => setTgtLang(e.target.value)}>
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
-                <option value="fr">French</option>
-                <option value="de">German</option>
-                <option value="pt">Portuguese</option>
+                {LANGS.map((l) => (
+                  <option key={l.code} value={l.code}>{l.label}</option>
+                ))}
               </select>
             </div>
           </div>
