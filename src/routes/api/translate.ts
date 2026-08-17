@@ -83,7 +83,7 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
   if (!Array.isArray(arr)) return [];
   type Out = {
     x: number; y: number; w: number; h: number;
-    translated: string; bg: string;
+    translated: string; original: string; bg: string;
     kind: "bubble" | "narration" | "sfx" | "sign" | "freefloat";
     hasBackdrop: boolean;
     shape: "rounded" | "ellipse" | "rect" | "irregular" | "none";
@@ -112,6 +112,7 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     const w = rawW * sx;
     const h = rawH * sy;
     const translated = typeof o.translated === "string" ? o.translated : "";
+    const original = typeof o.original === "string" ? o.original : "";
     const bg = clampHex(o.bg, "#FFFFFF");
     const kindRaw = typeof o.kind === "string" ? o.kind.toLowerCase() : "bubble";
     const kind: Out["kind"] =
@@ -152,6 +153,7 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
       w: Math.max(1, Math.min(maxW - x, w)),
       h: Math.max(1, Math.min(maxH - y, h)),
       translated,
+      original,
       bg,
       kind,
       hasBackdrop,
