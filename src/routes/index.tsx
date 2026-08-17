@@ -12,6 +12,9 @@ import {
   type StoredFile,
   type StoredPage,
 } from "@/lib/idb";
+import { analyzeRegion, eraseInk } from "@/lib/inpaint";
+import { LANGS } from "@/lib/langs";
+import { extractDocText, isArchive, isImage, isPdf, isTextDoc, pdfToImages, type DocBlocks } from "@/lib/docs";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -39,7 +42,7 @@ type RegionShape = "rounded" | "ellipse" | "rect" | "irregular" | "none";
 type RegionStyle = "print" | "handwritten" | "brush" | "bold" | "italic";
 type Region = {
   x: number; y: number; w: number; h: number;
-  translated: string; bg: string;
+  translated: string; original?: string; bg: string;
   kind: RegionKind;
   hasBackdrop: boolean;
   shape?: RegionShape;
