@@ -12,6 +12,9 @@ import {
   type StoredFile,
   type StoredPage,
 } from "@/lib/idb";
+import { analyzeRegion, eraseInk } from "@/lib/inpaint";
+import { LANGS } from "@/lib/langs";
+import { extractDocText, isArchive, isImage, isPdf, isTextDoc, pdfToImages, type DocBlocks } from "@/lib/docs";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -39,7 +42,7 @@ type RegionShape = "rounded" | "ellipse" | "rect" | "irregular" | "none";
 type RegionStyle = "print" | "handwritten" | "brush" | "bold" | "italic";
 type Region = {
   x: number; y: number; w: number; h: number;
-  translated: string; bg: string;
+  translated: string; original?: string; bg: string;
   kind: RegionKind;
   hasBackdrop: boolean;
   shape?: RegionShape;
@@ -64,17 +67,6 @@ type Page = {
 };
 type LogLine = { text: string; cls?: "ok-line" | "accent-line" | "skip-line" };
 
-const LANG_NAMES: Record<string, string> = {
-  auto: "the source language",
-  ja: "Japanese",
-  zh: "Chinese",
-  ko: "Korean",
-  en: "English",
-  es: "Spanish",
-  fr: "French",
-  de: "German",
-  pt: "Portuguese",
-};
 
 function loadImage(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
@@ -135,146 +127,114 @@ function fontFamilyFor(style: RegionStyle, kind: RegionKind) {
 }
 
 function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
-  const { x, y, w, h, translated, bg, kind, hasBackdrop } = r;
-  const shape: RegionShape = r.shape ?? (hasBackdrop ? (kind === "narration" ? "rect" : "ellipse") : "none");
+  // ---- 1. Look at the actual pixels of the source region -------------------
+  const a = analyzeRegion(ctx, r.x, r.y, r.w, r.h);
+  const bx = a ? a.x : r.x;
+  const by = a ? a.y : r.y;
+  const bw = a ? a.w : r.w;
+  const bh = a ? a.h : r.h;
+  const plate = a?.plate || r.bg || "#FFFFFF";
+  const kind = r.kind;
   const style: RegionStyle = r.style ?? "print";
-  const angle = ((r.angle ?? 0) * Math.PI) / 180;
   const align = r.align ?? "center";
+  const angle = ((r.angle ?? 0) * Math.PI) / 180;
+
+  // The pixel evidence decides whether a container really exists; the model's
+  // flag only acts as a veto. Text drawn straight on artwork never gains a box.
+  const modelBackdrop = r.hasBackdrop !== false;
+  const hasBackdrop = a ? a.hasBackdrop && modelBackdrop : modelBackdrop;
+  const shape: RegionShape = hasBackdrop
+    ? (r.shape && r.shape !== "none" ? r.shape : kind === "narration" ? "rect" : "ellipse")
+    : "none";
+
+  // ---- 2. Erase the original lettering, pixel by pixel ---------------------
+  eraseInk(ctx, bx, by, bw, bh, plate);
+
+  // ---- 3. Fit the replacement text to the measured ink box ----------------
   ctx.save();
   const family = fontFamilyFor(style, kind);
-  const fill = bg || "#FFFFFF";
-  let ink = r.textColor || pickInk(fill);
+  const ink = r.textColor || a?.ink || pickInk(plate);
+  const weight = style === "bold" || style === "brush" || kind === "sfx" ? 800
+    : kind === "narration" ? 500
+    : 600;
+  const slant = style === "italic" ? "italic " : "";
+  const display = kind === "sfx" || style === "brush" ? r.translated.toUpperCase() : r.translated;
+  const lineGap = 1.16;
+  const measuredCap = a?.capHeight || r.capHeight || bh / Math.max(1, r.lines ?? 1);
 
-  // Rotate around the box centre so slanted / tilted lettering is matched.
-  const ccx = x + w / 2, ccy = y + h / 2;
-  if (angle) {
-    ctx.translate(ccx, ccy);
-    ctx.rotate(angle);
-    ctx.translate(-ccx, -ccy);
+  // Growing the container is only allowed when the original HAD one — text on
+  // bare artwork must stay inside its own footprint.
+  const growW = hasBackdrop ? bw * 1.45 : bw * 1.06;
+  const growH = hasBackdrop ? bh * 1.45 : bh * 1.06;
+
+  let fontSize = Math.max(8, Math.round(measuredCap * (style === "handwritten" ? 1.1 : 1)));
+  let lines: string[] = [];
+  let textW = 0;
+  let textH = 0;
+  for (;;) {
+    ctx.font = `${slant}${weight} ${fontSize}px ${family}`;
+    lines = wrapText(ctx, display, Math.max(12, growW));
+    textW = Math.max(...lines.map((l) => ctx.measureText(l).width));
+    textH = lines.length * fontSize * lineGap;
+    if ((textW <= growW && textH <= growH) || fontSize <= 8) break;
+    fontSize -= 1;
   }
 
+  // ---- 4. Redraw a container ONLY when the original had one ---------------
+  const cx0 = bx + bw / 2;
+  const cy0 = by + bh / 2;
+  if (angle) {
+    ctx.translate(cx0, cy0);
+    ctx.rotate(angle);
+    ctx.translate(-cx0, -cy0);
+  }
   if (hasBackdrop) {
-    // Redraw the plate at the SAME geometry as the original, matching its
-    // measured silhouette so the overlay reads as part of the artwork.
-    const pad = Math.max(1, Math.min(w, h) * 0.02);
-    const bx = x - pad, by = y - pad, bw = w + pad * 2, bh = h + pad * 2;
-    ctx.fillStyle = fill;
+    // Scale the plate to the words it holds (never a fixed default size), but
+    // never smaller than the original silhouette so the source stays covered.
+    const padX = Math.max(4, fontSize * 0.55);
+    const padY = Math.max(3, fontSize * 0.42);
+    const pw = Math.max(bw, textW + padX * 2);
+    const ph = Math.max(bh, textH + padY * 2);
+    const px = cx0 - pw / 2;
+    const py = cy0 - ph / 2;
+    ctx.fillStyle = plate;
     ctx.beginPath();
     if (shape === "ellipse" || shape === "irregular") {
-      ctx.ellipse(bx + bw / 2, by + bh / 2, (bw / 2) * 1.08, (bh / 2) * 1.12, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx0, cy0, (pw / 2) * 1.1, (ph / 2) * 1.15, 0, 0, Math.PI * 2);
       ctx.fill();
     } else if (shape === "rect") {
-      ctx.fillRect(bx, by, bw, bh);
+      ctx.fillRect(px, py, pw, ph);
     } else {
-      const radius = Math.max(2, Math.min(bw, bh) * 0.22);
+      const radius = Math.max(2, Math.min(pw, ph) * 0.24);
       if (typeof ctx.roundRect === "function") {
-        ctx.roundRect(bx, by, bw, bh, radius);
+        ctx.roundRect(px, py, pw, ph, radius);
         ctx.fill();
-      } else ctx.fillRect(bx, by, bw, bh);
+      } else ctx.fillRect(px, py, pw, ph);
     }
-    if (!r.textColor) ink = pickInk(fill);
-  } else {
-    // No engineered bubble. Sample the ring of pixels JUST outside the bbox
-    // to learn the underlying surface color (the artwork backdrop OR a solid
-    // text plate that the lettering sits on, e.g. a black subtitle banner),
-    // then erase the original text by painting an OPAQUE rectangle of that
-    // color over the exact source-text bounds. The translated text then
-    // clips cleanly onto this rectangle and inherits the original style —
-    // no shadow, no gradient halo, no bubble.
-    const fillColor = sampleRingColor(ctx, x, y, w, h) || fill;
-    const pad = Math.max(1, Math.min(w, h) * 0.04);
-    ctx.fillStyle = fillColor;
-    ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
-    // Keep the original ink color when we know it, else stay legible.
-    ink = r.textColor || pickInk(fillColor);
   }
 
+  // ---- 5. Paint the translated lettering ----------------------------------
+  ctx.font = `${slant}${weight} ${fontSize}px ${family}`;
   ctx.fillStyle = ink;
   ctx.textBaseline = "middle";
   ctx.textAlign = align;
-  const padX = Math.max(2, w * 0.04);
-  const padY = Math.max(1, h * 0.04);
-  const maxWidth = w - padX * 2;
-  const maxHeight = h - padY * 2;
-  // Start from the measured cap-height of the ORIGINAL lettering so the
-  // replacement renders at the same optical size, then shrink only to fit.
-  const measuredCap = r.capHeight && r.capHeight > 0 ? r.capHeight : h / Math.max(1, r.lines ?? 1);
-  let fontSize = Math.max(9, Math.floor(measuredCap * (style === "handwritten" ? 1.15 : 1.0)));
-  fontSize = Math.min(fontSize, Math.floor(h * 1.05));
-  let lines: string[] = [];
-  const lineGap = 1.18;
-  const weight = style === "bold" || style === "brush" || kind === "sfx" ? 800
-    : kind === "narration" ? 500
-    : style === "handwritten" ? 600
-    : 600;
-  const slant = style === "italic" ? "italic " : "";
-  const display = kind === "sfx" || style === "brush" ? translated.toUpperCase() : translated;
-  for (; fontSize >= 9; fontSize -= 1) {
-    ctx.font = `${slant}${weight} ${fontSize}px ${family}`;
-    lines = wrapText(ctx, display, maxWidth);
-    const totalHeight = lines.length * fontSize * lineGap;
-    const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
-    if (totalHeight <= maxHeight && widest <= maxWidth) break;
-    if (fontSize === 9) break;
-  }
-  ctx.font = `${slant}${weight} ${fontSize}px ${family}`;
   const lineHeight = fontSize * lineGap;
   const totalTextHeight = (lines.length - 1) * lineHeight + fontSize;
-  const cy = y + h / 2 - totalTextHeight / 2 + fontSize / 2;
-  const cx = align === "left" ? x + padX : align === "right" ? x + w - padX : x + w / 2;
-
-  // Only stroke when the ORIGINAL lettering had an outline (e.g. SFX halos).
+  const startY = cy0 - totalTextHeight / 2 + fontSize / 2;
+  const drawX = align === "left" ? cx0 - textW / 2 : align === "right" ? cx0 + textW / 2 : cx0;
   if (r.strokeColor) {
     ctx.strokeStyle = r.strokeColor;
     ctx.lineWidth = Math.max(1, fontSize * 0.08);
     ctx.lineJoin = "round";
   }
   for (let i = 0; i < lines.length; i++) {
-    if (r.strokeColor) ctx.strokeText(lines[i], cx, cy + i * lineHeight, maxWidth);
-    ctx.fillText(lines[i], cx, cy + i * lineHeight, maxWidth);
+    const ly = startY + i * lineHeight;
+    if (r.strokeColor) ctx.strokeText(lines[i], drawX, ly);
+    ctx.fillText(lines[i], drawX, ly);
   }
   ctx.restore();
 }
 
-function sampleRingColor(
-  ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number,
-): string | null {
-  try {
-    const ring = Math.max(2, Math.round(Math.min(w, h) * 0.08));
-    const sx = Math.max(0, Math.floor(x - ring));
-    const sy = Math.max(0, Math.floor(y - ring));
-    const sw = Math.min(ctx.canvas.width - sx, Math.ceil(w + ring * 2));
-    const sh = Math.min(ctx.canvas.height - sy, Math.ceil(h + ring * 2));
-    if (sw <= 0 || sh <= 0) return null;
-    const data = ctx.getImageData(sx, sy, sw, sh).data;
-    // Bucket outer-ring pixels by quantized color; pick the dominant bucket.
-    // This is more robust than a simple mean (which muddies black-on-white).
-    const buckets = new Map<number, { r: number; g: number; b: number; n: number }>();
-    for (let py = 0; py < sh; py++) {
-      for (let px = 0; px < sw; px++) {
-        const inInterior =
-          px >= ring && px < sw - ring && py >= ring && py < sh - ring;
-        if (inInterior) continue;
-        const o = (py * sw + px) * 4;
-        const r = data[o], g = data[o + 1], b = data[o + 2];
-        const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
-        const bucket = buckets.get(key);
-        if (bucket) { bucket.r += r; bucket.g += g; bucket.b += b; bucket.n++; }
-        else buckets.set(key, { r, g, b, n: 1 });
-      }
-    }
-    let best: { r: number; g: number; b: number; n: number } | null = null;
-    buckets.forEach((v) => { if (!best || v.n > best.n) best = v; });
-    if (!best) return null;
-    const b = best as { r: number; g: number; b: number; n: number };
-    const r = Math.round(b.r / b.n), g = Math.round(b.g / b.n), bl = Math.round(b.b / b.n);
-    const hex = (n: number) => n.toString(16).padStart(2, "0");
-    return `#${hex(r)}${hex(g)}${hex(bl)}`;
-  } catch {
-    return null;
-  }
-}
 
 function Index() {
   const [pages, setPages] = useState<Page[]>([]);
@@ -300,6 +260,9 @@ function Index() {
   const [sheetSnap, setSheetSnap] = useState<0 | 1 | 2>(1);
   const sheetRef = useRef<HTMLDivElement>(null);
   const sheetDrag = useRef<{ startY: number; startSnap: 0 | 1 | 2; moved: boolean } | null>(null);
+
+  const [doc, setDoc] = useState<(DocBlocks & { translations: string[] }) | null>(null);
+  const [docBusy, setDocBusy] = useState(false);
 
   const [srcLang, setSrcLang] = useState("auto");
   const [tgtLang, setTgtLang] = useState("en");
@@ -442,20 +405,50 @@ function Index() {
     await ingestArchive(file, file.name, file.size, file.lastModified);
   }, [ingestArchive]);
 
-  // ---- Accept loose JPG/PNG images (single or multiple) by packing them into an in-memory archive
+  // ---- Document ingestion: Word / PowerPoint / plain text -----------------
+  const handleTextDoc = useCallback(async (file: File) => {
+    setStatusText("Reading document…"); setStatusMode("busy");
+    appendLog(`Opening ${file.name}…`);
+    try {
+      const parsed = await extractDocText(file);
+      setDoc({ ...parsed, translations: [] });
+      setStatusText(`${parsed.blocks.length} text blocks loaded`); setStatusMode("done");
+      appendLog(`Loaded ${parsed.blocks.length} text blocks from ${file.name}.`, "ok-line");
+    } catch (err) {
+      appendLog(`Failed to read document: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
+      setStatusText("Failed to read document"); setStatusMode("");
+    }
+  }, [appendLog]);
+
+  // ---- Accept archives, loose images, and PDFs (rendered to page images)
   const handleFiles = useCallback(async (fileList: FileList | File[]) => {
     const files = Array.from(fileList);
     if (!files.length) return;
-    const isImage = (f: File) =>
-      /^image\//i.test(f.type) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name);
-    const images = files.filter(isImage);
-    const archive = files.find((f) => /\.(cbz|zip)$/i.test(f.name));
+
+    const textDoc = files.find(isTextDoc);
+    if (textDoc) { await handleTextDoc(textDoc); return; }
+
+    const pdf = files.find(isPdf);
+    let images = files.filter(isImage);
+    if (pdf) {
+      setStatusText("Rendering PDF…"); setStatusMode("busy");
+      appendLog(`Rendering ${pdf.name} to page images…`);
+      try {
+        const rendered = await pdfToImages(pdf, (d, t) => setStatusText(`Rendering PDF page ${d}/${t}`));
+        images = images.concat(rendered);
+        appendLog(`Rendered ${rendered.length} PDF page${rendered.length === 1 ? "" : "s"}.`, "ok-line");
+      } catch (err) {
+        appendLog(`Could not render PDF: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
+        setStatusText("Failed to read PDF"); setStatusMode(""); return;
+      }
+    }
+
+    const archive = files.find(isArchive);
     if (images.length === 0) {
       if (archive) { await handleFile(archive); return; }
-      appendLog("Unsupported file. Use a .cbz archive or JPG/PNG images.", "accent-line");
+      appendLog("Unsupported file. Use CBZ, PDF, JPG/PNG, DOCX, PPTX or TXT.", "accent-line");
       return;
     }
-    if (archive && images.length === 0) { await handleFile(archive); return; }
 
     images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     const zip = new JSZip();
@@ -465,11 +458,11 @@ function Index() {
       zip.file(`${String(i + 1).padStart(pad, "0")}-${f.name.replace(/\.[^.]+$/, "")}.${ext}`, f);
     });
     const blob = await zip.generateAsync({ type: "blob" });
-    const name = images.length === 1 ? images[0].name : `${images.length} images`;
-    const size = images.reduce((s, f) => s + f.size, 0);
-    const lastMod = images.reduce((m, f) => Math.max(m, f.lastModified), 0);
+    const name = pdf ? pdf.name : images.length === 1 ? images[0].name : `${images.length} images`;
+    const size = pdf ? pdf.size : images.reduce((s, f) => s + f.size, 0);
+    const lastMod = pdf ? pdf.lastModified : images.reduce((m, f) => Math.max(m, f.lastModified), 0);
     await ingestArchive(blob, name, size, lastMod);
-  }, [appendLog, handleFile, ingestArchive]);
+  }, [appendLog, handleFile, handleTextDoc, ingestArchive]);
 
   // ---- On boot: try to restore the last opened file from IDB
   const triedRestoreRef = useRef(false);
@@ -833,6 +826,70 @@ function Index() {
     appendLog("Cleared saved session.", "accent-line");
   }, [fileLabel, pages, appendLog]);
 
+  // ---- Document translation ------------------------------------------------
+  const translateDoc = useCallback(async () => {
+    if (!doc || docBusy) return;
+    setDocBusy(true);
+    setStatusText("Translating document…"); setStatusMode("busy");
+    const out: string[] = [];
+    const CHUNK = 12;
+    try {
+      for (let i = 0; i < doc.blocks.length; i += CHUNK) {
+        const slice = doc.blocks.slice(i, i + CHUNK);
+        const res = await fetch("/api/translate-text", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ blocks: slice, srcLang, tgtLang, glossary, customInstructions }),
+        });
+        const text = await res.text();
+        let data: { translations?: string[]; error?: string } = {};
+        try { data = JSON.parse(text) as typeof data; }
+        catch { throw new Error("Server returned a non-JSON response — try again."); }
+        if (data.error) throw new Error(data.error);
+        out.push(...(data.translations || slice.map(() => "")));
+        setDoc((d) => (d ? { ...d, translations: out.slice() } : d));
+        appendLog(`Translated blocks ${i + 1}–${Math.min(doc.blocks.length, i + CHUNK)}.`, "ok-line");
+        if (i + CHUNK < doc.blocks.length) await new Promise((r) => setTimeout(r, 900));
+      }
+      setStatusText("Document translated"); setStatusMode("done");
+    } catch (err) {
+      appendLog(`Document: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
+      setStatusText("Document translation failed"); setStatusMode("");
+    }
+    setDocBusy(false);
+  }, [doc, docBusy, srcLang, tgtLang, glossary, customInstructions, appendLog]);
+
+  // ---- Bilingual transcript (original + translation) ------------------------
+  const downloadTranscript = useCallback(() => {
+    const lines: string[] = [];
+    const title = doc?.name || fileLabel?.name || "transcript";
+    lines.push(`Koe/Box transcript — ${title}`, `Generated ${new Date().toLocaleString()}`, "");
+    if (doc) {
+      doc.blocks.forEach((b, i) => {
+        lines.push(`--- Block ${i + 1} ---`, "ORIGINAL:", b, "", "TRANSLATION:", doc.translations[i] || "(not translated)", "");
+      });
+    } else {
+      pages.forEach((p, i) => {
+        if (p.status !== "translated" || !p.regions.length) return;
+        lines.push(`--- Page ${i + 1} (${p.name}) ---`);
+        p.regions.forEach((r, k) => {
+          lines.push(`[${k + 1}] ${r.kind}`);
+          if (r.original) lines.push(`  ORIGINAL:    ${r.original}`);
+          lines.push(`  TRANSLATION: ${r.translated}`);
+        });
+        lines.push("");
+      });
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.replace(/\.[^.]+$/, "")}.transcript.txt`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    appendLog("Transcript downloaded.", "ok-line");
+  }, [doc, pages, fileLabel, appendLog]);
+
   const current = pages[currentIndex];
   const hasTranslation = !!current && current.status === "translated" && current.regions.length > 0;
   const translatedCount = pages.filter((p) => p.status === "translated").length;
@@ -903,14 +960,14 @@ function Index() {
             >
               <span className="icon">⌸</span>
               <span className="label">
-                {fileLabel ? "Drop another file, or click to browse" : "Drop a .cbz or JPG/PNG, or click to browse"}
+                {fileLabel || doc ? "Drop another file, or click to browse" : "Drop a CBZ, PDF, image or document"}
               </span>
-              <span className="hint">CBZ/ZIP archives, or JPG &amp; PNG images (multi-select ok)</span>
+              <span className="hint">CBZ/ZIP · PDF · JPG/PNG/WebP · DOCX · PPTX · TXT/MD/CSV</span>
             </div>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".cbz,.zip,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+              accept=".cbz,.zip,.pdf,.docx,.pptx,.txt,.md,.csv,.rtf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
               multiple
               style={{ display: "none" }}
               onChange={(e) => { if (e.target.files?.length) void handleFiles(e.target.files); e.target.value = ""; }}
@@ -931,19 +988,17 @@ function Index() {
             <div className="lang-row">
               <select value={srcLang} onChange={(e) => setSrcLang(e.target.value)}>
                 <option value="auto">Auto‑detect source</option>
-                <option value="ja">Japanese</option>
-                <option value="zh">Chinese (Simplified/Traditional)</option>
-                <option value="ko">Korean</option>
+                {LANGS.map((l) => (
+                  <option key={l.code} value={l.code}>{l.label}</option>
+                ))}
               </select>
             </div>
             <div className="lang-row">
               <span className="lang-arrow">→</span>
               <select value={tgtLang} onChange={(e) => setTgtLang(e.target.value)}>
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
-                <option value="fr">French</option>
-                <option value="de">German</option>
-                <option value="pt">Portuguese</option>
+                {LANGS.map((l) => (
+                  <option key={l.code} value={l.code}>{l.label}</option>
+                ))}
               </select>
             </div>
           </div>
@@ -1011,6 +1066,16 @@ function Index() {
                   ↓ Download {downloadName}
                 </a>
               )}
+              {doc && (
+                <button className="btn-primary" disabled={docBusy} onClick={translateDoc}>
+                  {docBusy ? "Translating document…" : `Translate Document (${doc.blocks.length} blocks)`}
+                </button>
+              )}
+              {(doc || translatedCount > 0) && (
+                <button className="btn-secondary" onClick={downloadTranscript}>
+                  ↓ Download Transcript (original + translation)
+                </button>
+              )}
             </div>
             <div className="progress-mini">
               <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
@@ -1074,7 +1139,18 @@ function Index() {
             >
               <span className="grip" />
             </div>
-            {!pages.length && (
+            {doc && !pages.length && (
+              <div className="doc-view">
+                <div className="doc-title">{doc.name}</div>
+                {doc.blocks.map((b, i) => (
+                  <div className="doc-block" key={i}>
+                    <div className="doc-src">{b}</div>
+                    {doc.translations[i] && <div className="doc-tgt">{doc.translations[i]}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {!pages.length && !doc && (
               <div className="empty-state">
                 <div className="glyph">字</div>
                 <div className="msg">
@@ -1305,6 +1381,11 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .view-toggle button.active { background: var(--ink); color: var(--paper); }
 .viewer { flex: 1; overflow-y: auto; padding: 24px; position: relative; }
 .drag-handle { display: none; }
+.doc-view { padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+.doc-view .doc-title { font-weight: 700; font-size: 15px; opacity: .8; }
+.doc-block { border: 1px solid rgba(0,0,0,.08); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,.5); }
+.doc-src { white-space: pre-wrap; font-size: 13px; opacity: .62; }
+.doc-tgt { white-space: pre-wrap; font-size: 14px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,.12); }
 .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); gap: 8px; padding: 20px; }
 .empty-state .glyph { font-family: 'Archivo Narrow', sans-serif; font-size: 64px; font-weight: 800; color: var(--panel); line-height: 1; }
 .empty-state .msg { font-size: 14px; max-width: 320px; line-height: 1.6; }
