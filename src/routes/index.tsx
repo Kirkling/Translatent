@@ -644,54 +644,65 @@ function Index() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Draw single-page canvas
-  useEffect(() => {
-    if (view !== "single") return;
-    const p = pages[currentIndex];
-    const canvas = canvasRef.current;
+  // Composited overlay renders are cached so flipping between pages is instant
+  // instead of re-running the pixel analysis on every navigation.
+  const compositeCache = useRef(new Map<string, HTMLCanvasElement>());
+  const getComposite = useCallback((p: Page) => {
+    const key = `${p.name}|${p.w}x${p.h}|${p.status}|${p.regions.length}|${p.regions[0]?.translated ?? ""}`;
+    const cache = compositeCache.current;
+    const hit = cache.get(key);
+    if (hit) { cache.delete(key); cache.set(key, hit); return hit; }
+    const c = document.createElement("canvas");
+    c.width = p.w; c.height = p.h;
+    const cctx = c.getContext("2d", { willReadFrequently: true })!;
+    cctx.imageSmoothingQuality = "high";
+    paintPage(cctx, p, true);
+    cache.set(key, c);
+    while (cache.size > 6) cache.delete(cache.keys().next().value as string);
+    return c;
+  }, []);
+
+  const blit = useCallback((canvas: HTMLCanvasElement | null, p: Page | undefined, translated: boolean) => {
     if (!p || !canvas) return;
-    const dpr = 2;
-    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
-    // Let CSS handle sizing; aspect-ratio on the wrapper preserves shape.
+    if (canvas.width !== p.w || canvas.height !== p.h) {
+      canvas.width = p.w; canvas.height = p.h;
+    }
+    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.clearRect(0, 0, p.w, p.h);
+    const overlay = translated && p.status === "translated" && p.regions.length > 0;
+    if (overlay) ctx.drawImage(getComposite(p), 0, 0);
+    else ctx.drawImage(p.img, 0, 0, p.w, p.h);
+  }, [getComposite]);
+
+  // Draw single-page canvas
+  const singlePage = view === "single" ? pages[currentIndex] : undefined;
+  useEffect(() => {
+    if (view !== "single" || !singlePage) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     canvas.style.width = "100%";
     canvas.style.height = "auto";
-    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(p.img, 0, 0, p.w, p.h);
-    if (p.status === "translated" && p.regions.length > 0 && showTranslated) {
-      for (const r of p.regions) drawTextBox(ctx, r);
-    }
-  }, [view, currentIndex, pages, showTranslated]);
+    let raf = requestAnimationFrame(() => blit(canvas, singlePage, showTranslated));
+    return () => cancelAnimationFrame(raf);
+  }, [view, singlePage, showTranslated, blit]);
 
   // Draw lightbox canvas
+  const lightboxPage = lightboxIndex === null ? undefined : pages[lightboxIndex];
   useEffect(() => {
-    if (lightboxIndex === null) return;
-    const p = pages[lightboxIndex];
+    if (!lightboxPage) return;
     const canvas = lightboxCanvasRef.current;
-    if (!p || !canvas) return;
-    // Render at 2x so text stays crisp when the user zooms in.
-    const dpr = 2;
-    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
-    // Don't pin pixel dims — let CSS scale the canvas while preserving the
-    // intrinsic aspect ratio. Fixing both width & height in px in combination
-    // with max-width/max-height in CSS was warping the displayed image.
+    if (!canvas) return;
     canvas.style.width = "";
     canvas.style.height = "";
-    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(p.img, 0, 0, p.w, p.h);
-    if (p.status === "translated" && p.regions.length > 0 && lightboxTranslated) {
-      for (const r of p.regions) drawTextBox(ctx, r);
-    }
-  }, [lightboxIndex, pages, lightboxTranslated]);
+    const raf = requestAnimationFrame(() => blit(canvas, lightboxPage, lightboxTranslated));
+    return () => cancelAnimationFrame(raf);
+  }, [lightboxPage, lightboxTranslated, blit]);
+
 
   const callServer = useCallback(
     async (page: Page, kind: "presence" | "detect", priorContext: string) => {
