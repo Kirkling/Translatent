@@ -126,14 +126,65 @@ function fontFamilyFor(style: RegionStyle, kind: RegionKind) {
   return `'Inter', 'Helvetica Neue', Arial, sans-serif`;
 }
 
-function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
+type Rect = { x: number; y: number; w: number; h: number };
+
+function intersects(a: Rect, b: Rect, gap = 0) {
+  return (
+    a.x < b.x + b.w + gap &&
+    a.x + a.w + gap > b.x &&
+    a.y < b.y + b.h + gap &&
+    a.y + a.h + gap > b.y
+  );
+}
+
+// Grow `base` toward `desired` but stop at the page edges and at anything
+// already drawn, so two overlays can never cover each other or bleed over
+// artwork they don't own.
+function constrainBox(base: Rect, desired: Rect, placed: Rect[], pageW: number, pageH: number): Rect {
+  let box: Rect = {
+    x: Math.max(0, desired.x),
+    y: Math.max(0, desired.y),
+    w: Math.min(desired.w, pageW),
+    h: Math.min(desired.h, pageH),
+  };
+  if (box.x + box.w > pageW) box.x = Math.max(0, pageW - box.w);
+  if (box.y + box.h > pageH) box.y = Math.max(0, pageH - box.h);
+
+  for (const o of placed) {
+    if (!intersects(box, o, 1)) continue;
+    // Cut the box back along whichever axis is cheapest, never past `base`.
+    const cutLeft = box.x + box.w - o.x;          // shrink right edge
+    const cutRight = o.x + o.w - box.x;           // shrink left edge
+    const cutTop = box.y + box.h - o.y;           // shrink bottom edge
+    const cutBottom = o.y + o.h - box.y;          // shrink top edge
+    const options = [
+      { cost: cutLeft, apply: () => ({ ...box, w: Math.max(base.w * 0.6, box.w - cutLeft - 2) }) },
+      { cost: cutRight, apply: () => ({ ...box, x: box.x + cutRight + 2, w: Math.max(base.w * 0.6, box.w - cutRight - 2) }) },
+      { cost: cutTop, apply: () => ({ ...box, h: Math.max(base.h * 0.6, box.h - cutTop - 2) }) },
+      { cost: cutBottom, apply: () => ({ ...box, y: box.y + cutBottom + 2, h: Math.max(base.h * 0.6, box.h - cutBottom - 2) }) },
+    ].filter((o2) => o2.cost > 0).sort((p, q) => p.cost - q.cost);
+    if (options.length) box = options[0].apply();
+  }
+  return box;
+}
+
+function drawTextBox(
+  ctx: CanvasRenderingContext2D,
+  r: Region,
+  placed: Rect[] = [],
+  pageW = ctx.canvas.width,
+  pageH = ctx.canvas.height,
+) {
   // ---- 1. Look at the actual pixels of the source region -------------------
   const a = analyzeRegion(ctx, r.x, r.y, r.w, r.h);
-  const bx = a ? a.x : r.x;
-  const by = a ? a.y : r.y;
-  const bw = a ? a.w : r.w;
-  const bh = a ? a.h : r.h;
-  const plate = a?.plate || r.bg || "#FFFFFF";
+  // Only trust the pixel-measured box when the read looked sane; otherwise the
+  // model's box is safer than a bbox derived from a bad plate guess.
+  const usePixels = !!a && a.reliable;
+  const bx = usePixels ? a!.x : r.x;
+  const by = usePixels ? a!.y : r.y;
+  const bw = usePixels ? a!.w : r.w;
+  const bh = usePixels ? a!.h : r.h;
+  const plate = (usePixels ? a!.plate : null) || r.bg || "#FFFFFF";
   const kind = r.kind;
   const style: RegionStyle = r.style ?? "print";
   const align = r.align ?? "center";
@@ -142,32 +193,44 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
   // The pixel evidence decides whether a container really exists; the model's
   // flag only acts as a veto. Text drawn straight on artwork never gains a box.
   const modelBackdrop = r.hasBackdrop !== false;
-  const hasBackdrop = a ? a.hasBackdrop && modelBackdrop : modelBackdrop;
+  const hasBackdrop = usePixels ? a!.hasBackdrop && modelBackdrop : modelBackdrop;
   const shape: RegionShape = hasBackdrop
     ? (r.shape && r.shape !== "none" ? r.shape : kind === "narration" ? "rect" : "ellipse")
     : "none";
 
   // ---- 2. Erase the original lettering, pixel by pixel ---------------------
-  eraseInk(ctx, bx, by, bw, bh, plate);
+  const erased = eraseInk(ctx, bx, by, bw, bh, plate);
 
   // ---- 3. Fit the replacement text to the measured ink box ----------------
   ctx.save();
   const family = fontFamilyFor(style, kind);
-  const ink = r.textColor || a?.ink || pickInk(plate);
+  const ink = r.textColor || (usePixels ? a!.ink : undefined) || pickInk(plate);
   const weight = style === "bold" || style === "brush" || kind === "sfx" ? 800
     : kind === "narration" ? 500
     : 600;
   const slant = style === "italic" ? "italic " : "";
   const display = kind === "sfx" || style === "brush" ? r.translated.toUpperCase() : r.translated;
   const lineGap = 1.16;
-  const measuredCap = a?.capHeight || r.capHeight || bh / Math.max(1, r.lines ?? 1);
+  const measuredCap = (usePixels ? a!.capHeight : 0) || r.capHeight || bh / Math.max(1, r.lines ?? 1);
 
   // Growing the container is only allowed when the original HAD one — text on
-  // bare artwork must stay inside its own footprint.
-  const growW = hasBackdrop ? bw * 1.45 : bw * 1.06;
-  const growH = hasBackdrop ? bh * 1.45 : bh * 1.06;
+  // bare artwork must stay inside its own footprint. Either way the result is
+  // clipped to the page and to boxes already drawn.
+  const base: Rect = { x: bx, y: by, w: bw, h: bh };
+  const growFactor = hasBackdrop ? 1.4 : 1.04;
+  const wanted: Rect = {
+    x: bx - (bw * (growFactor - 1)) / 2,
+    y: by - (bh * (growFactor - 1)) / 2,
+    w: bw * growFactor,
+    h: bh * growFactor,
+  };
+  const room = constrainBox(base, wanted, placed, pageW, pageH);
+  const growW = Math.max(10, room.w);
+  const growH = Math.max(8, room.h);
 
-  let fontSize = Math.max(8, Math.round(measuredCap * (style === "handwritten" ? 1.1 : 1)));
+  // Start from the measured original cap height so scale matches the source,
+  // then only shrink if the translated string genuinely needs more room.
+  let fontSize = Math.max(7, Math.round(measuredCap * (style === "handwritten" ? 1.08 : 1)));
   let lines: string[] = [];
   let textW = 0;
   let textH = 0;
@@ -176,41 +239,50 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
     lines = wrapText(ctx, display, Math.max(12, growW));
     textW = Math.max(...lines.map((l) => ctx.measureText(l).width));
     textH = lines.length * fontSize * lineGap;
-    if ((textW <= growW && textH <= growH) || fontSize <= 8) break;
+    if ((textW <= growW && textH <= growH) || fontSize <= 7) break;
     fontSize -= 1;
   }
 
   // ---- 4. Redraw a container ONLY when the original had one ---------------
-  const cx0 = bx + bw / 2;
-  const cy0 = by + bh / 2;
+  const cx0 = room.x + room.w / 2;
+  const cy0 = room.y + room.h / 2;
   if (angle) {
     ctx.translate(cx0, cy0);
     ctx.rotate(angle);
     ctx.translate(-cx0, -cy0);
   }
+  const padX = Math.max(3, fontSize * 0.5);
+  const padY = Math.max(2, fontSize * 0.38);
+  let coverW = Math.min(room.w, Math.max(bw, textW + padX * 2));
+  let coverH = Math.min(room.h, Math.max(bh, textH + padY * 2));
+  const coverX = cx0 - coverW / 2;
+  const coverY = cy0 - coverH / 2;
+
   if (hasBackdrop) {
     // Scale the plate to the words it holds (never a fixed default size), but
     // never smaller than the original silhouette so the source stays covered.
-    const padX = Math.max(4, fontSize * 0.55);
-    const padY = Math.max(3, fontSize * 0.42);
-    const pw = Math.max(bw, textW + padX * 2);
-    const ph = Math.max(bh, textH + padY * 2);
-    const px = cx0 - pw / 2;
-    const py = cy0 - ph / 2;
     ctx.fillStyle = plate;
     ctx.beginPath();
     if (shape === "ellipse" || shape === "irregular") {
-      ctx.ellipse(cx0, cy0, (pw / 2) * 1.1, (ph / 2) * 1.15, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx0, cy0, (coverW / 2) * 1.06, (coverH / 2) * 1.1, 0, 0, Math.PI * 2);
       ctx.fill();
     } else if (shape === "rect") {
-      ctx.fillRect(px, py, pw, ph);
+      ctx.fillRect(coverX, coverY, coverW, coverH);
     } else {
-      const radius = Math.max(2, Math.min(pw, ph) * 0.24);
+      const radius = Math.max(2, Math.min(coverW, coverH) * 0.24);
       if (typeof ctx.roundRect === "function") {
-        ctx.roundRect(px, py, pw, ph, radius);
+        ctx.roundRect(coverX, coverY, coverW, coverH, radius);
         ctx.fill();
-      } else ctx.fillRect(px, py, pw, ph);
+      } else ctx.fillRect(coverX, coverY, coverW, coverH);
     }
+  } else if (!erased) {
+    // No container in the original and the pixel eraser could not do its job
+    // (busy artwork behind the glyphs): lay down the tightest possible opaque
+    // patch in the sampled surface colour so the source text still disappears.
+    coverW = bw;
+    coverH = bh;
+    ctx.fillStyle = plate;
+    ctx.fillRect(bx, by, bw, bh);
   }
 
   // ---- 5. Paint the translated lettering ----------------------------------
@@ -233,7 +305,28 @@ function drawTextBox(ctx: CanvasRenderingContext2D, r: Region) {
     ctx.fillText(lines[i], drawX, ly);
   }
   ctx.restore();
+
+  // Reserve the footprint so later regions route around it.
+  placed.push({
+    x: Math.min(bx, coverX),
+    y: Math.min(by, coverY),
+    w: Math.max(bw, coverW),
+    h: Math.max(bh, coverH),
+  });
 }
+
+// Paint a page + all its overlays, biggest boxes first so small SFX never get
+// swallowed by a larger bubble growing over them.
+function paintPage(ctx: CanvasRenderingContext2D, p: Page, translated: boolean) {
+  ctx.drawImage(p.img, 0, 0, p.w, p.h);
+  if (!translated || p.status !== "translated" || !p.regions.length) return;
+  const placed: Rect[] = [];
+  const order = p.regions
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.w * b.r.h - a.r.w * a.r.h);
+  for (const { r } of order) drawTextBox(ctx, r, placed, p.w, p.h);
+}
+
 
 
 function Index() {
@@ -551,54 +644,65 @@ function Index() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Draw single-page canvas
-  useEffect(() => {
-    if (view !== "single") return;
-    const p = pages[currentIndex];
-    const canvas = canvasRef.current;
+  // Composited overlay renders are cached so flipping between pages is instant
+  // instead of re-running the pixel analysis on every navigation.
+  const compositeCache = useRef(new Map<string, HTMLCanvasElement>());
+  const getComposite = useCallback((p: Page) => {
+    const key = `${p.name}|${p.w}x${p.h}|${p.status}|${p.regions.length}|${p.regions[0]?.translated ?? ""}`;
+    const cache = compositeCache.current;
+    const hit = cache.get(key);
+    if (hit) { cache.delete(key); cache.set(key, hit); return hit; }
+    const c = document.createElement("canvas");
+    c.width = p.w; c.height = p.h;
+    const cctx = c.getContext("2d", { willReadFrequently: true })!;
+    cctx.imageSmoothingQuality = "high";
+    paintPage(cctx, p, true);
+    cache.set(key, c);
+    while (cache.size > 6) cache.delete(cache.keys().next().value as string);
+    return c;
+  }, []);
+
+  const blit = useCallback((canvas: HTMLCanvasElement | null, p: Page | undefined, translated: boolean) => {
     if (!p || !canvas) return;
-    const dpr = 2;
-    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
-    // Let CSS handle sizing; aspect-ratio on the wrapper preserves shape.
+    if (canvas.width !== p.w || canvas.height !== p.h) {
+      canvas.width = p.w; canvas.height = p.h;
+    }
+    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.clearRect(0, 0, p.w, p.h);
+    const overlay = translated && p.status === "translated" && p.regions.length > 0;
+    if (overlay) ctx.drawImage(getComposite(p), 0, 0);
+    else ctx.drawImage(p.img, 0, 0, p.w, p.h);
+  }, [getComposite]);
+
+  // Draw single-page canvas
+  const singlePage = view === "single" ? pages[currentIndex] : undefined;
+  useEffect(() => {
+    if (view !== "single" || !singlePage) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     canvas.style.width = "100%";
     canvas.style.height = "auto";
-    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(p.img, 0, 0, p.w, p.h);
-    if (p.status === "translated" && p.regions.length > 0 && showTranslated) {
-      for (const r of p.regions) drawTextBox(ctx, r);
-    }
-  }, [view, currentIndex, pages, showTranslated]);
+    let raf = requestAnimationFrame(() => blit(canvas, singlePage, showTranslated));
+    return () => cancelAnimationFrame(raf);
+  }, [view, singlePage, showTranslated, blit]);
 
   // Draw lightbox canvas
+  const lightboxPage = lightboxIndex === null ? undefined : pages[lightboxIndex];
   useEffect(() => {
-    if (lightboxIndex === null) return;
-    const p = pages[lightboxIndex];
+    if (!lightboxPage) return;
     const canvas = lightboxCanvasRef.current;
-    if (!p || !canvas) return;
-    // Render at 2x so text stays crisp when the user zooms in.
-    const dpr = 2;
-    canvas.width = p.w * dpr; canvas.height = p.h * dpr;
-    // Don't pin pixel dims — let CSS scale the canvas while preserving the
-    // intrinsic aspect ratio. Fixing both width & height in px in combination
-    // with max-width/max-height in CSS was warping the displayed image.
+    if (!canvas) return;
     canvas.style.width = "";
     canvas.style.height = "";
-    canvas.style.aspectRatio = `${p.w} / ${p.h}`;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(p.img, 0, 0, p.w, p.h);
-    if (p.status === "translated" && p.regions.length > 0 && lightboxTranslated) {
-      for (const r of p.regions) drawTextBox(ctx, r);
-    }
-  }, [lightboxIndex, pages, lightboxTranslated]);
+    const raf = requestAnimationFrame(() => blit(canvas, lightboxPage, lightboxTranslated));
+    return () => cancelAnimationFrame(raf);
+  }, [lightboxPage, lightboxTranslated, blit]);
+
 
   const callServer = useCallback(
     async (page: Page, kind: "presence" | "detect", priorContext: string) => {
