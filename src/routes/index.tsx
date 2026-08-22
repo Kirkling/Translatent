@@ -1274,7 +1274,7 @@ function Index() {
                     onClick={() => openLightbox(i)}
                     onKeyDown={(e) => { if (e.key === "Enter") openLightbox(i); }}
                   >
-                    <img src={p.url} loading="lazy" alt={`Page ${i + 1}`} />
+                    <img src={p.url} loading="lazy" decoding="async" alt={`Page ${i + 1}`} />
                     <span className="num">#{String(i + 1).padStart(3, "0")}</span>
                     <span className={`badge ${p.status}`}>{badgeLabel(p.status)}</span>
                   </div>
