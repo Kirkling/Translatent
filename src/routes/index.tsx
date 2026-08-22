@@ -706,7 +706,7 @@ function Index() {
 
   const callServer = useCallback(
     async (page: Page, kind: "presence" | "detect", priorContext: string) => {
-      const blob = await downscaleToBlob(page.img, kind === "presence" ? 512 : 1600, 0.75);
+      const blob = await downscaleToBlob(page.img, kind === "presence" ? 512 : 2048, 0.82);
       const fd = new FormData();
       fd.append("image", blob, "page.jpg");
       fd.append("kind", kind);
