@@ -744,9 +744,9 @@ function Index() {
       if (p.status === "translated" && p.regions.length) {
         const c = document.createElement("canvas");
         c.width = p.w; c.height = p.h;
-        const ctx = c.getContext("2d")!;
-        ctx.drawImage(p.img, 0, 0, p.w, p.h);
-        for (const r of p.regions) drawTextBox(ctx, r);
+        const ctx = c.getContext("2d", { willReadFrequently: true })!;
+        paintPage(ctx, p, true);
+
         blob = await new Promise<Blob>((res) => c.toBlob((b) => res(b!), "image/jpeg", 0.9));
       }
       const ext = blob.type === "image/png" ? "png" : "jpg";
