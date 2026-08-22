@@ -42,7 +42,7 @@ type RegionShape = "rounded" | "ellipse" | "rect" | "irregular" | "none";
 type RegionStyle = "print" | "handwritten" | "brush" | "bold" | "italic";
 type Region = {
   x: number; y: number; w: number; h: number;
-  translated: string; original?: string; bg: string;
+  translated: string; original?: string; speaker?: string; bg: string;
   kind: RegionKind;
   hasBackdrop: boolean;
   shape?: RegionShape;
@@ -687,7 +687,7 @@ function Index() {
     if (!canvas) return;
     canvas.style.width = "100%";
     canvas.style.height = "auto";
-    let raf = requestAnimationFrame(() => blit(canvas, singlePage, showTranslated));
+    const raf = requestAnimationFrame(() => blit(canvas, singlePage, showTranslated));
     return () => cancelAnimationFrame(raf);
   }, [view, singlePage, showTranslated, blit]);
 
@@ -1496,7 +1496,7 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
 .page-card { background: var(--panel); border-radius: 4px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: border-color .15s, transform .1s; position: relative; }
 .page-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.page-card img { width: 100%; display: block; aspect-ratio: 2/3; object-fit: cover; background: var(--paper); }
+.page-card img { width: 100%; content-visibility: auto; contain-intrinsic-size: 300px 450px; display: block; aspect-ratio: 2/3; object-fit: cover; background: var(--paper); }
 .page-card .num { position: absolute; top: 6px; left: 6px; background: var(--ink); color: var(--paper); font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border-radius: 3px; }
 .page-card .badge { position: absolute; top: 6px; right: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border-radius: 3px; color: var(--paper); }
 .badge.translated { background: var(--ok); }
