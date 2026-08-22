@@ -100,7 +100,6 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
   for (const r of arr) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
-    // Coordinates arrive in a resolution-independent 0–1000 grid, so they map
     // exactly onto the page at ANY resolution (the model sees a downscaled
     // copy). Values > 1000 are treated as legacy pixel coordinates.
     const rawX = Number(o.x), rawY = Number(o.y), rawW = Number(o.w), rawH = Number(o.h);
@@ -143,7 +142,7 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     const align: Out["align"] = alignRaw === "left" || alignRaw === "right" ? alignRaw : "center";
     const vertical = o.vertical === true;
     const capRaw = Number(o.capHeight);
-    // capHeight is reported in the same 0–1000 grid as the box.
+    // capHeight is reported in the same normalized grid as the box.
     const capHeight = Number.isFinite(capRaw) && capRaw > 0
       ? capRaw * sy
       : 0;
@@ -276,7 +275,7 @@ export const Route = createFileRoute("/api/translate")({
             customInstructions.trim()
               ? `USER INSTRUCTIONS — follow these in addition to the rules above:\n${customInstructions.trim()}`
               : "",
-            `Respond ONLY with a JSON array, no prose, no markdown fences. Each element: {"x":number,"y":number,"w":number,"h":number,"translated":"...","original":"...","bg":"#RRGGBB","textColor":"#RRGGBB","strokeColor":"#RRGGBB"|null,"kind":"bubble|narration|sfx|sign|freefloat","shape":"ellipse|rounded|rect|irregular|none","hasBackdrop":true|false,"angle":number,"style":"print|handwritten|brush|bold|italic","align":"left|center|right","vertical":true|false,"capHeight":number,"lines":number}. If there is no text at all, respond with [].`,
+            `Respond ONLY with a JSON array, no prose, no markdown fences. Each element: {"x":number,"y":number,"w":number,"h":number,"translated":"...","original":"...","bg":"#RRGGBB","textColor":"#RRGGBB","strokeColor":"#RRGGBB"|null,"kind":"bubble|narration|sfx|sign|freefloat","shape":"ellipse|rounded|rect|irregular|none","hasBackdrop":true|false,"angle":number,"style":"print|handwritten|brush|bold|italic","align":"left|center|right","vertical":true|false,"capHeight":number,"lines":number,"speaker":"..."}. If there is no text at all, respond with [].`,
           ]
             .filter(Boolean)
             .join("\n\n");
@@ -289,7 +288,7 @@ export const Route = createFileRoute("/api/translate")({
                 { type: "image_url", image_url: { url: dataUrl } },
                 {
                   type: "text",
-                  text: `Source page resolution: ${width}x${height} pixels (aspect ratio ${(width / Math.max(1, height)).toFixed(4)}). Read the lettering glyph by glyph and report all geometry in the 0–1000 normalized grid described above, not in pixels. Find every text region, capture its exact box, shape, rotation, colors and lettering style, and translate to ${tgtName}. Respond with ONLY the JSON array.`,
+                  text: `Source page resolution: ${width}x${height} pixels (aspect ratio ${(width / Math.max(1, height)).toFixed(4)}). Read the lettering glyph by glyph and report all geometry in the 0–10000 normalized grid described above, not in pixels. Find every text region, capture its exact box, shape, rotation, colors and lettering style, and translate to ${tgtName}. Respond with ONLY the JSON array.`,
                 },
               ],
             },
