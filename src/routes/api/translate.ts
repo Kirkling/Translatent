@@ -83,7 +83,7 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
   if (!Array.isArray(arr)) return [];
   type Out = {
     x: number; y: number; w: number; h: number;
-    translated: string; original: string; bg: string;
+    translated: string; original: string; speaker: string; bg: string;
     kind: "bubble" | "narration" | "sfx" | "sign" | "freefloat";
     hasBackdrop: boolean;
     shape: "rounded" | "ellipse" | "rect" | "irregular" | "none";
@@ -104,15 +104,20 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     // exactly onto the page at ANY resolution (the model sees a downscaled
     // copy). Values > 1000 are treated as legacy pixel coordinates.
     const rawX = Number(o.x), rawY = Number(o.y), rawW = Number(o.w), rawH = Number(o.h);
-    const normalized = [rawX, rawY, rawW, rawH].every((n) => Number.isFinite(n) && n <= 1000);
-    const sx = normalized ? maxW / 1000 : 1;
-    const sy = normalized ? maxH / 1000 : 1;
+    // Values arrive in the fine 0–10000 grid. Older/loose replies may use the
+    // legacy 0–1000 grid or raw pixels; detect and scale accordingly.
+    const finite = [rawX, rawY, rawW, rawH].every((n) => Number.isFinite(n));
+    const maxVal = Math.max(rawX + rawW, rawY + rawH);
+    const grid = !finite ? 0 : maxVal <= 1001 ? 1000 : maxVal <= 10100 ? 10000 : 0;
+    const sx = grid ? maxW / grid : 1;
+    const sy = grid ? maxH / grid : 1;
     const x = rawX * sx;
     const y = rawY * sy;
     const w = rawW * sx;
     const h = rawH * sy;
     const translated = typeof o.translated === "string" ? o.translated : "";
     const original = typeof o.original === "string" ? o.original : "";
+    const speaker = typeof o.speaker === "string" ? o.speaker.slice(0, 40) : "";
     const bg = clampHex(o.bg, "#FFFFFF");
     const kindRaw = typeof o.kind === "string" ? o.kind.toLowerCase() : "bubble";
     const kind: Out["kind"] =
@@ -140,7 +145,7 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     const capRaw = Number(o.capHeight);
     // capHeight is reported in the same 0–1000 grid as the box.
     const capHeight = Number.isFinite(capRaw) && capRaw > 0
-      ? capRaw * (normalized ? maxH / 1000 : 1)
+      ? capRaw * sy
       : 0;
     const linesRaw = Number(o.lines);
     const lines = Number.isFinite(linesRaw) && linesRaw > 0 ? Math.min(12, Math.round(linesRaw)) : 0;
@@ -154,6 +159,7 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
       h: Math.max(1, Math.min(maxH - y, h)),
       translated,
       original,
+      speaker,
       bg,
       kind,
       hasBackdrop,
@@ -169,6 +175,26 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
       capHeight: Math.min(h, capHeight || h * 0.8),
       lines,
     });
+  }
+  // Safety net: even with the prompt rule, occasionally two boxes overlap.
+  // Shrink the smaller one along its cheapest axis until they are disjoint so
+  // overlays can never cover each other.
+  out.sort((a, b) => b.w * b.h - a.w * a.h);
+  for (let i = 1; i < out.length; i++) {
+    const b = out[i];
+    for (let j = 0; j < i; j++) {
+      const a = out[j];
+      const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (ox <= 0 || oy <= 0) continue;
+      if (ox < oy) {
+        if (b.x < a.x) b.w = Math.max(1, b.w - ox);
+        else { b.x += ox; b.w = Math.max(1, b.w - ox); }
+      } else {
+        if (b.y < a.y) b.h = Math.max(1, b.h - oy);
+        else { b.y += oy; b.h = Math.max(1, b.h - oy); }
+      }
+    }
   }
   return out;
 }
