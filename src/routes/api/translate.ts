@@ -100,8 +100,6 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
   for (const r of arr) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
-    // exactly onto the page at ANY resolution (the model sees a downscaled
-    // copy). Values > 1000 are treated as legacy pixel coordinates.
     const rawX = Number(o.x), rawY = Number(o.y), rawW = Number(o.w), rawH = Number(o.h);
     // Values arrive in the fine 0–10000 grid. Older/loose replies may use the
     // legacy 0–1000 grid or raw pixels; detect and scale accordingly.
