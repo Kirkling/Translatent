@@ -997,6 +997,34 @@ function Index() {
   );
   const pauseTranslation = useCallback(() => { pauseRef.current = true; }, []);
 
+  // Re-run the overlay compositor for a page using the regions it already has —
+  // no API call, no credits. Useful after a scale/ratio pass or a bad paint.
+  const redrawPage = useCallback((i: number) => {
+    const p = pages[i];
+    if (!p) return;
+    compositeCache.current.clear();
+    setPages((prev) => {
+      const next = prev.slice();
+      next[i] = { ...next[i], regions: sanitizeRegions(next[i].regions, next[i].w, next[i].h) };
+      return next;
+    });
+    setRedrawTick((t) => t + 1);
+    appendLog(`Page ${i + 1}: overlay redrawn.`, "ok-line");
+  }, [pages, appendLog]);
+
+  // Throw away this page's translation and scan it again from scratch.
+  const regeneratePage = useCallback((i: number) => {
+    if (running || !pages[i]) return;
+    compositeCache.current.clear();
+    setPages((prev) => {
+      const next = prev.slice();
+      next[i] = { ...next[i], status: "pending" as PageStatus, regions: [] };
+      return next;
+    });
+    setRedrawTick((t) => t + 1);
+    setTimeout(() => translateRange([i]), 50);
+  }, [running, pages, translateRange]);
+
   const clearSaved = useCallback(async () => {
     if (!fileLabel) return;
     if (!confirm("Discard the saved file and all its translations from this browser?")) return;
