@@ -613,13 +613,16 @@ function Index() {
     return () => clearTimeout(t);
   }, [pages, fileLabel, saveSnapshot]);
 
-  // ---- Flush on backgrounding the tab
+  // ---- Keep translating while the tab is hidden.
+  // Pacing uses a Worker timer (see @/lib/bgtimer) so the queue keeps ticking in
+  // a background tab; a wake lock (where supported) stops mobile from freezing
+  // the page mid-run. Re-acquire the lock when the tab comes back to the front.
   useEffect(() => {
-    const onHide = () => {
-      if (running) pauseRef.current = true;
-    };
-    document.addEventListener("visibilitychange", onHide);
-    return () => document.removeEventListener("visibilitychange", onHide);
+    if (!running) { void releaseWakeLock(); return; }
+    void acquireWakeLock();
+    const onVis = () => { if (document.visibilityState === "visible") void acquireWakeLock(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
   }, [running]);
 
   // ---- History API: intercept back gesture to close overlays
