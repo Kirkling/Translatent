@@ -217,6 +217,10 @@ export const Route = createFileRoute("/api/translate")({
           const noFlag = String(form.get("noFlag") || "true") === "true";
           const textOnly = String(form.get("textOnly") || "true") === "true";
           const priorContext = String(form.get("priorContext") || "").slice(0, 2000);
+          const sessionContext = String(form.get("sessionContext") || "").slice(0, 1500);
+          const pageIndex = Number(form.get("pageIndex") || 0);
+          const pageCount = Number(form.get("pageCount") || 0);
+          const scanScale = Number(form.get("scanScale") || 1);
           const customInstructions = String(form.get("customInstructions") || "").slice(0, 1500);
 
           if (!(image instanceof Blob)) return json({ error: "image field required" }, 400);
