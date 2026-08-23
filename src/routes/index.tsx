@@ -897,8 +897,18 @@ function Index() {
       const page = pages[i];
       updatePage(i, { status: "processing" });
       try {
-        const resp = await callServer(page, "detect", buildPrior(i));
-        const safe = resp.regions || [];
+        const resp = await callServer(page, "detect", buildPrior(i), {
+          pageIndex: i,
+          pageCount: pages.length,
+          sessionContext: buildSession(),
+        });
+        const safe = sanitizeRegions(resp.regions || [], page.w, page.h);
+        for (const r of safe) {
+          if (!r.speaker) continue;
+          const list = speakerLines.get(r.speaker) ?? [];
+          if (list.length < 2) list.push(r.translated.slice(0, 60));
+          speakerLines.set(r.speaker, list);
+        }
         if (skipBlank && safe.length === 0) {
           updatePage(i, { status: "skipped" });
           appendLog(`Page ${i + 1}: no text detected — copied through untouched.`, "skip-line");
