@@ -364,6 +364,7 @@ function Index() {
   const [view, setView] = useState<"grid" | "single">("grid");
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showTranslated, setShowTranslated] = useState(true);
+  const [redrawTick, setRedrawTick] = useState(0);
   const [statusText, setStatusText] = useState("No file loaded");
   const [statusMode, setStatusMode] = useState<"" | "busy" | "done">("");
   const [progress, setProgress] = useState(0);
