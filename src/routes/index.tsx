@@ -13,6 +13,7 @@ import {
   type StoredPage,
 } from "@/lib/idb";
 import { analyzeRegion, eraseInk } from "@/lib/inpaint";
+import { acquireWakeLock, bgSleep, releaseWakeLock } from "@/lib/bgtimer";
 import { LANGS } from "@/lib/langs";
 import { extractDocText, isArchive, isImage, isPdf, isTextDoc, pdfToImages, type DocBlocks } from "@/lib/docs";
 
