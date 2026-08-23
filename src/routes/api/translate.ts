@@ -298,7 +298,7 @@ export const Route = createFileRoute("/api/translate")({
                 { type: "image_url", image_url: { url: dataUrl } },
                 {
                   type: "text",
-                  text: `Source page resolution: ${width}x${height} pixels (aspect ratio ${(width / Math.max(1, height)).toFixed(4)}). Read the lettering glyph by glyph and report all geometry in the 0–10000 normalized grid described above, not in pixels. Find every text region, capture its exact box, shape, rotation, colors and lettering style, and translate to ${tgtName}. Respond with ONLY the JSON array.`,
+                  text: `Source page resolution: ${width}x${height} pixels (aspect ratio ${(width / Math.max(1, height)).toFixed(4)}); the attached copy is scaled to ${(scanScale * 100).toFixed(1)}% of that, so measure on the attached image and report in the normalized grid.${pageIndex && pageCount ? ` This is page ${pageIndex} of ${pageCount}.` : ""} Read the lettering glyph by glyph and report all geometry in the 0–10000 normalized grid described above, not in pixels. Find every text region, capture its exact box, shape, rotation, colors and lettering style, and translate to ${tgtName}. Respond with ONLY the JSON array.`,
                 },
               ],
             },
