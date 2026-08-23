@@ -722,7 +722,7 @@ function Index() {
     canvas.style.height = "auto";
     const raf = requestAnimationFrame(() => blit(canvas, singlePage, showTranslated));
     return () => cancelAnimationFrame(raf);
-  }, [view, singlePage, showTranslated, blit]);
+  }, [view, singlePage, showTranslated, blit, redrawTick]);
 
   // Draw lightbox canvas
   const lightboxPage = lightboxIndex === null ? undefined : pages[lightboxIndex];
