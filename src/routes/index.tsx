@@ -737,13 +737,26 @@ function Index() {
 
 
   const callServer = useCallback(
-    async (page: Page, kind: "presence" | "detect", priorContext: string) => {
-      const blob = await downscaleToBlob(page.img, kind === "presence" ? 512 : 2048, 0.82);
+    async (
+      page: Page,
+      kind: "presence" | "detect",
+      priorContext: string,
+      meta?: { pageIndex?: number; pageCount?: number; sessionContext?: string },
+    ) => {
+      // Measure the page up front so the request carries true dimensions and the
+      // exact scale factor used for the uploaded copy.
+      const scanMax = kind === "presence" ? 512 : 2048;
+      const scale = Math.min(1, scanMax / Math.max(page.w, page.h));
+      const blob = await downscaleToBlob(page.img, scanMax, 0.82);
       const fd = new FormData();
       fd.append("image", blob, "page.jpg");
       fd.append("kind", kind);
       fd.append("width", String(page.w));
       fd.append("height", String(page.h));
+      fd.append("scanScale", scale.toFixed(4));
+      if (meta?.pageIndex != null) fd.append("pageIndex", String(meta.pageIndex + 1));
+      if (meta?.pageCount != null) fd.append("pageCount", String(meta.pageCount));
+      if (meta?.sessionContext) fd.append("sessionContext", meta.sessionContext.slice(0, 1500));
       fd.append("srcLang", srcLang);
       fd.append("tgtLang", tgtLang);
       fd.append("glossary", glossary);
