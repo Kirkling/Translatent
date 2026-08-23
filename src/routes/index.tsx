@@ -864,6 +864,29 @@ function Index() {
       return lines.join("\n");
     };
 
+    // ---- Session sandbox: one shared ledger for this file only. Every page is
+    // translated in isolation (its own image, its own boxes) but carries the
+    // book-wide speaker/term ledger so names, honorifics and tone stay stable.
+    const speakerLines = new Map<string, string[]>();
+    for (const p of snapshot) {
+      if (p.status !== "translated") continue;
+      for (const r of p.regions) {
+        if (!r.speaker) continue;
+        const list = speakerLines.get(r.speaker) ?? [];
+        if (list.length < 2) list.push(r.translated.slice(0, 60));
+        speakerLines.set(r.speaker, list);
+      }
+    }
+    const buildSession = () => {
+      const parts: string[] = [];
+      for (const [speaker, samples] of speakerLines) {
+        parts.push(`${speaker}: ${samples.join(" / ")}`);
+        if (parts.length >= 12) break;
+      }
+      return parts.length ? `SPEAKER LEDGER (reuse these labels and voices):\n${parts.join("\n")}` : "";
+    };
+
+
     for (let idx = 0; idx < indices.length; idx++) {
       const i = indices[idx];
       if (pauseRef.current) {
