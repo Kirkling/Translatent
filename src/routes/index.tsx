@@ -956,7 +956,7 @@ function Index() {
       done++;
       setProgress((done / total) * 100);
       if (!pauseRef.current && done < total) {
-        await new Promise((r) => setTimeout(r, pacingRef.current));
+        await bgSleep(pacingRef.current);
       }
     }
 
