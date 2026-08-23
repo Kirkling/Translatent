@@ -129,6 +129,34 @@ function fontFamilyFor(style: RegionStyle, kind: RegionKind) {
 
 type Rect = { x: number; y: number; w: number; h: number };
 
+// Page-relative sanity pass: a text box must sit inside the page and keep a
+// believable ratio against the page it belongs to. Models occasionally return a
+// box spanning most of the sheet (or a 2px sliver) — both wreck the overlay, so
+// clamp them to page-scaled bounds before anything is drawn.
+function sanitizeRegions(regions: Region[], pageW: number, pageH: number): Region[] {
+  const minW = pageW * 0.008;
+  const minH = pageH * 0.008;
+  const maxW = pageW * 0.9;
+  const maxH = pageH * 0.55;
+  const out: Region[] = [];
+  for (const r of regions) {
+    let { x, y, w, h } = r;
+    if (![x, y, w, h].every((n) => Number.isFinite(n))) continue;
+    w = Math.min(Math.max(w, minW), maxW);
+    h = Math.min(Math.max(h, minH), maxH);
+    // A single region covering more than half the sheet is almost always a
+    // mis-merge of several bubbles — drop it rather than paint over the art.
+    if (w * h > pageW * pageH * 0.45) continue;
+    x = Math.max(0, Math.min(pageW - w, x));
+    y = Math.max(0, Math.min(pageH - h, y));
+    const capHeight = r.capHeight
+      ? Math.min(Math.max(r.capHeight, pageH * 0.006), pageH * 0.09)
+      : undefined;
+    out.push({ ...r, x, y, w, h, capHeight });
+  }
+  return out;
+}
+
 function intersects(a: Rect, b: Rect, gap = 0) {
   return (
     a.x < b.x + b.w + gap &&
