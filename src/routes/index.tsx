@@ -734,7 +734,7 @@ function Index() {
     canvas.style.height = "";
     const raf = requestAnimationFrame(() => blit(canvas, lightboxPage, lightboxTranslated));
     return () => cancelAnimationFrame(raf);
-  }, [lightboxPage, lightboxTranslated, blit]);
+  }, [lightboxPage, lightboxTranslated, blit, redrawTick]);
 
 
   const callServer = useCallback(
