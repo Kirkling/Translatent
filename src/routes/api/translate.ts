@@ -149,6 +149,10 @@ function parseRegions(raw: string, maxW: number, maxH: number) {
     if (![x, y, w, h].every((n) => Number.isFinite(n))) continue;
     if (w <= 0 || h <= 0) continue;
     if (!translated) continue;
+    // Page-relative ratio guard: reject boxes that are implausible against the
+    // page they belong to (a slab covering half the sheet, or a sub-pixel sliver).
+    if (w * h > maxW * maxH * 0.45) continue;
+    if (w < maxW * 0.004 || h < maxH * 0.004) continue;
     out.push({
       x: Math.max(0, Math.min(maxW, x)),
       y: Math.max(0, Math.min(maxH, y)),
