@@ -13,6 +13,7 @@ import {
   type StoredPage,
 } from "@/lib/idb";
 import { analyzeRegion, eraseInk } from "@/lib/inpaint";
+import { acquireWakeLock, bgSleep, releaseWakeLock } from "@/lib/bgtimer";
 import { LANGS } from "@/lib/langs";
 import { extractDocText, isArchive, isImage, isPdf, isTextDoc, pdfToImages, type DocBlocks } from "@/lib/docs";
 
@@ -127,6 +128,34 @@ function fontFamilyFor(style: RegionStyle, kind: RegionKind) {
 }
 
 type Rect = { x: number; y: number; w: number; h: number };
+
+// Page-relative sanity pass: a text box must sit inside the page and keep a
+// believable ratio against the page it belongs to. Models occasionally return a
+// box spanning most of the sheet (or a 2px sliver) — both wreck the overlay, so
+// clamp them to page-scaled bounds before anything is drawn.
+function sanitizeRegions(regions: Region[], pageW: number, pageH: number): Region[] {
+  const minW = pageW * 0.008;
+  const minH = pageH * 0.008;
+  const maxW = pageW * 0.9;
+  const maxH = pageH * 0.55;
+  const out: Region[] = [];
+  for (const r of regions) {
+    let { x, y, w, h } = r;
+    if (![x, y, w, h].every((n) => Number.isFinite(n))) continue;
+    w = Math.min(Math.max(w, minW), maxW);
+    h = Math.min(Math.max(h, minH), maxH);
+    // A single region covering more than half the sheet is almost always a
+    // mis-merge of several bubbles — drop it rather than paint over the art.
+    if (w * h > pageW * pageH * 0.45) continue;
+    x = Math.max(0, Math.min(pageW - w, x));
+    y = Math.max(0, Math.min(pageH - h, y));
+    const capHeight = r.capHeight
+      ? Math.min(Math.max(r.capHeight, pageH * 0.006), pageH * 0.09)
+      : undefined;
+    out.push({ ...r, x, y, w, h, capHeight });
+  }
+  return out;
+}
 
 function intersects(a: Rect, b: Rect, gap = 0) {
   return (
@@ -335,6 +364,7 @@ function Index() {
   const [view, setView] = useState<"grid" | "single">("grid");
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showTranslated, setShowTranslated] = useState(true);
+  const [redrawTick, setRedrawTick] = useState(0);
   const [statusText, setStatusText] = useState("No file loaded");
   const [statusMode, setStatusMode] = useState<"" | "busy" | "done">("");
   const [progress, setProgress] = useState(0);
@@ -584,13 +614,16 @@ function Index() {
     return () => clearTimeout(t);
   }, [pages, fileLabel, saveSnapshot]);
 
-  // ---- Flush on backgrounding the tab
+  // ---- Keep translating while the tab is hidden.
+  // Pacing uses a Worker timer (see @/lib/bgtimer) so the queue keeps ticking in
+  // a background tab; a wake lock (where supported) stops mobile from freezing
+  // the page mid-run. Re-acquire the lock when the tab comes back to the front.
   useEffect(() => {
-    const onHide = () => {
-      if (running) pauseRef.current = true;
-    };
-    document.addEventListener("visibilitychange", onHide);
-    return () => document.removeEventListener("visibilitychange", onHide);
+    if (!running) { void releaseWakeLock(); return; }
+    void acquireWakeLock();
+    const onVis = () => { if (document.visibilityState === "visible") void acquireWakeLock(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
   }, [running]);
 
   // ---- History API: intercept back gesture to close overlays
@@ -689,7 +722,7 @@ function Index() {
     canvas.style.height = "auto";
     const raf = requestAnimationFrame(() => blit(canvas, singlePage, showTranslated));
     return () => cancelAnimationFrame(raf);
-  }, [view, singlePage, showTranslated, blit]);
+  }, [view, singlePage, showTranslated, blit, redrawTick]);
 
   // Draw lightbox canvas
   const lightboxPage = lightboxIndex === null ? undefined : pages[lightboxIndex];
@@ -701,17 +734,30 @@ function Index() {
     canvas.style.height = "";
     const raf = requestAnimationFrame(() => blit(canvas, lightboxPage, lightboxTranslated));
     return () => cancelAnimationFrame(raf);
-  }, [lightboxPage, lightboxTranslated, blit]);
+  }, [lightboxPage, lightboxTranslated, blit, redrawTick]);
 
 
   const callServer = useCallback(
-    async (page: Page, kind: "presence" | "detect", priorContext: string) => {
-      const blob = await downscaleToBlob(page.img, kind === "presence" ? 512 : 2048, 0.82);
+    async (
+      page: Page,
+      kind: "presence" | "detect",
+      priorContext: string,
+      meta?: { pageIndex?: number; pageCount?: number; sessionContext?: string },
+    ) => {
+      // Measure the page up front so the request carries true dimensions and the
+      // exact scale factor used for the uploaded copy.
+      const scanMax = kind === "presence" ? 512 : 2048;
+      const scale = Math.min(1, scanMax / Math.max(page.w, page.h));
+      const blob = await downscaleToBlob(page.img, scanMax, 0.82);
       const fd = new FormData();
       fd.append("image", blob, "page.jpg");
       fd.append("kind", kind);
       fd.append("width", String(page.w));
       fd.append("height", String(page.h));
+      fd.append("scanScale", scale.toFixed(4));
+      if (meta?.pageIndex != null) fd.append("pageIndex", String(meta.pageIndex + 1));
+      if (meta?.pageCount != null) fd.append("pageCount", String(meta.pageCount));
+      if (meta?.sessionContext) fd.append("sessionContext", meta.sessionContext.slice(0, 1500));
       fd.append("srcLang", srcLang);
       fd.append("tgtLang", tgtLang);
       fd.append("glossary", glossary);
@@ -819,6 +865,29 @@ function Index() {
       return lines.join("\n");
     };
 
+    // ---- Session sandbox: one shared ledger for this file only. Every page is
+    // translated in isolation (its own image, its own boxes) but carries the
+    // book-wide speaker/term ledger so names, honorifics and tone stay stable.
+    const speakerLines = new Map<string, string[]>();
+    for (const p of snapshot) {
+      if (p.status !== "translated") continue;
+      for (const r of p.regions) {
+        if (!r.speaker) continue;
+        const list = speakerLines.get(r.speaker) ?? [];
+        if (list.length < 2) list.push(r.translated.slice(0, 60));
+        speakerLines.set(r.speaker, list);
+      }
+    }
+    const buildSession = () => {
+      const parts: string[] = [];
+      for (const [speaker, samples] of speakerLines) {
+        parts.push(`${speaker}: ${samples.join(" / ")}`);
+        if (parts.length >= 12) break;
+      }
+      return parts.length ? `SPEAKER LEDGER (reuse these labels and voices):\n${parts.join("\n")}` : "";
+    };
+
+
     for (let idx = 0; idx < indices.length; idx++) {
       const i = indices[idx];
       if (pauseRef.current) {
@@ -829,8 +898,18 @@ function Index() {
       const page = pages[i];
       updatePage(i, { status: "processing" });
       try {
-        const resp = await callServer(page, "detect", buildPrior(i));
-        const safe = resp.regions || [];
+        const resp = await callServer(page, "detect", buildPrior(i), {
+          pageIndex: i,
+          pageCount: pages.length,
+          sessionContext: buildSession(),
+        });
+        const safe = sanitizeRegions(resp.regions || [], page.w, page.h);
+        for (const r of safe) {
+          if (!r.speaker) continue;
+          const list = speakerLines.get(r.speaker) ?? [];
+          if (list.length < 2) list.push(r.translated.slice(0, 60));
+          speakerLines.set(r.speaker, list);
+        }
         if (skipBlank && safe.length === 0) {
           updatePage(i, { status: "skipped" });
           appendLog(`Page ${i + 1}: no text detected — copied through untouched.`, "skip-line");
@@ -878,7 +957,7 @@ function Index() {
       done++;
       setProgress((done / total) * 100);
       if (!pauseRef.current && done < total) {
-        await new Promise((r) => setTimeout(r, pacingRef.current));
+        await bgSleep(pacingRef.current);
       }
     }
 
@@ -918,6 +997,34 @@ function Index() {
     [translateRange, currentIndex],
   );
   const pauseTranslation = useCallback(() => { pauseRef.current = true; }, []);
+
+  // Re-run the overlay compositor for a page using the regions it already has —
+  // no API call, no credits. Useful after a scale/ratio pass or a bad paint.
+  const redrawPage = useCallback((i: number) => {
+    const p = pages[i];
+    if (!p) return;
+    compositeCache.current.clear();
+    setPages((prev) => {
+      const next = prev.slice();
+      next[i] = { ...next[i], regions: sanitizeRegions(next[i].regions, next[i].w, next[i].h) };
+      return next;
+    });
+    setRedrawTick((t) => t + 1);
+    appendLog(`Page ${i + 1}: overlay redrawn.`, "ok-line");
+  }, [pages, appendLog]);
+
+  // Throw away this page's translation and scan it again from scratch.
+  const regeneratePage = useCallback((i: number) => {
+    if (running || !pages[i]) return;
+    compositeCache.current.clear();
+    setPages((prev) => {
+      const next = prev.slice();
+      next[i] = { ...next[i], status: "pending" as PageStatus, regions: [] };
+      return next;
+    });
+    setRedrawTick((t) => t + 1);
+    setTimeout(() => translateRange([i]), 50);
+  }, [running, pages, translateRange]);
 
   const clearSaved = useCallback(async () => {
     if (!fileLabel) return;
@@ -1302,6 +1409,14 @@ function Index() {
                   </button>
                   <button className="btn-secondary" disabled={running} onClick={translateCurrent}>
                     Translate This Page
+                  </button>
+                  <button className="btn-secondary" disabled={!hasTranslation}
+                    onClick={() => redrawPage(currentIndex)}>
+                    Redraw Overlay
+                  </button>
+                  <button className="btn-secondary" disabled={running}
+                    onClick={() => regeneratePage(currentIndex)}>
+                    Regenerate Page
                   </button>
                 </div>
               </div>
