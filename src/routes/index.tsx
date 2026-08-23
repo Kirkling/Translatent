@@ -1410,6 +1410,14 @@ function Index() {
                   <button className="btn-secondary" disabled={running} onClick={translateCurrent}>
                     Translate This Page
                   </button>
+                  <button className="btn-secondary" disabled={!hasTranslation}
+                    onClick={() => redrawPage(currentIndex)}>
+                    Redraw Overlay
+                  </button>
+                  <button className="btn-secondary" disabled={running}
+                    onClick={() => regeneratePage(currentIndex)}>
+                    Regenerate Page
+                  </button>
                 </div>
               </div>
             )}
