@@ -378,6 +378,9 @@ function Index() {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxTranslated, setLightboxTranslated] = useState(true);
   const [pacingMs, setPacingMs] = useState(2500);
+  // Small translated previews for the grid, so a finished page looks finished
+  // there too instead of still showing the untranslated scan.
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
 
   // Mobile bottom-sheet: 0 = peek, 1 = mid, 2 = full
   const [sheetSnap, setSheetSnap] = useState<0 | 1 | 2>(1);
@@ -512,6 +515,7 @@ function Index() {
         }
       }
       const id = fileId({ name, size, lastModified: lastMod });
+      setThumbs({});
       setDoc(null);
       setPages(loaded);
       setCurrentIndex(0);
@@ -725,6 +729,34 @@ function Index() {
     if (overlay) ctx.drawImage(getComposite(p), 0, 0);
     else ctx.drawImage(p.img, 0, 0, p.w, p.h);
   }, [getComposite]);
+
+  // Build (once per page) a small composite preview for the grid. Runs off the
+  // main flow so a long book doesn't stall the UI.
+  useEffect(() => {
+    let cancelled = false;
+    const todo = pages
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => p.status === "translated" && p.regions.length > 0 && !thumbs[`${p.name}|${p.regions.length}`]);
+    if (!todo.length) return;
+    const run = async () => {
+      for (const { p } of todo.slice(0, 4)) {
+        if (cancelled) return;
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const scale = Math.min(1, 420 / Math.max(p.w, p.h));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(p.w * scale));
+        c.height = Math.max(1, Math.round(p.h * scale));
+        const cctx = c.getContext("2d");
+        if (!cctx) continue;
+        cctx.drawImage(getComposite(p), 0, 0, c.width, c.height);
+        const url = c.toDataURL("image/jpeg", 0.72);
+        if (cancelled) return;
+        setThumbs((prev) => ({ ...prev, [`${p.name}|${p.regions.length}`]: url }));
+      }
+    };
+    void run();
+    return () => { cancelled = true; };
+  }, [pages, thumbs, getComposite, redrawTick]);
 
   // Draw single-page canvas
   const singlePage = view === "single" ? pages[currentIndex] : undefined;
@@ -1432,7 +1464,12 @@ function Index() {
                     onClick={() => openLightbox(i)}
                     onKeyDown={(e) => { if (e.key === "Enter") openLightbox(i); }}
                   >
-                    <img src={p.url} loading="lazy" decoding="async" alt={`Page ${i + 1}`} />
+                    <img
+                      src={(p.status === "translated" && thumbs[`${p.name}|${p.regions.length}`]) || p.url}
+                      loading="lazy"
+                      decoding="async"
+                      alt={`Page ${i + 1}`}
+                    />
                     <span className="num">#{String(i + 1).padStart(3, "0")}</span>
                     <span className={`badge ${p.status}`}>{badgeLabel(p.status)}</span>
                   </div>
@@ -1662,7 +1699,7 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
 .page-card { background: var(--panel); border-radius: 4px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: border-color .15s, transform .1s; position: relative; }
 .page-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.page-card img { width: 100%; content-visibility: auto; contain-intrinsic-size: 300px 450px; display: block; aspect-ratio: 2/3; object-fit: cover; background: var(--paper); }
+.page-card img { width: 100%; content-visibility: auto; contain-intrinsic-size: 300px 450px; display: block; aspect-ratio: 2/3; object-fit: contain; background: var(--paper); }
 .page-card .num { position: absolute; top: 6px; left: 6px; background: var(--ink); color: var(--paper); font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border-radius: 3px; }
 .page-card .badge { position: absolute; top: 6px; right: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border-radius: 3px; color: var(--paper); }
 .badge.translated { background: var(--ok); }
@@ -1673,8 +1710,8 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .single-page-nav { display: flex; align-items: center; gap: 14px; font-family: 'JetBrains Mono', monospace; font-size: 13px; }
 .single-page-nav button { background: var(--ink); color: var(--paper); width: 34px; height: 34px; font-size: 16px; border-radius: 4px; }
 .single-page-nav button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
-.canvas-wrap { position: relative; max-width: 100%; box-shadow: 0 4px 24px rgba(26,26,31,0.15); line-height: 0; cursor: zoom-in; }
-.canvas-wrap canvas { width: 100%; height: auto; max-height: 78vh; display: block; object-fit: contain; }
+.canvas-wrap { position: relative; max-width: 100%; display: flex; justify-content: center; box-shadow: 0 4px 24px rgba(26,26,31,0.15); line-height: 0; cursor: zoom-in; }
+.canvas-wrap canvas { max-width: 100%; max-height: 78vh; width: auto; height: auto; display: block; }
 .compare-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
 
 /* Sheet backdrop — hidden on desktop, visible on mobile under the sheet */
