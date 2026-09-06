@@ -378,6 +378,9 @@ function Index() {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxTranslated, setLightboxTranslated] = useState(true);
   const [pacingMs, setPacingMs] = useState(2500);
+  // Small translated previews for the grid, so a finished page looks finished
+  // there too instead of still showing the untranslated scan.
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
 
   // Mobile bottom-sheet: 0 = peek, 1 = mid, 2 = full
   const [sheetSnap, setSheetSnap] = useState<0 | 1 | 2>(1);
@@ -400,6 +403,8 @@ function Index() {
   const lightboxCanvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const pauseRef = useRef(false);
+  const pagesRef = useRef<Page[]>([]);
+  const runningRef = useRef(false);
   const pacingRef = useRef(2500);
   const successSinceHitRef = useRef(0);
 
@@ -408,6 +413,11 @@ function Index() {
   }, []);
 
   useEffect(() => { pacingRef.current = pacingMs; }, [pacingMs]);
+  // Mirrors of state the translation loop needs to read *now* rather than from
+  // the closure it was created with — this is what keeps queued actions
+  // (regenerate, re-run, resume) from working off a stale page list.
+  useEffect(() => { pagesRef.current = pages; }, [pages]);
+  useEffect(() => { runningRef.current = running; }, [running]);
 
   // Make sure the hand-lettered / brush faces are rasterizable on canvas
   // before any overlay is drawn, otherwise they silently fall back.
@@ -505,6 +515,8 @@ function Index() {
         }
       }
       const id = fileId({ name, size, lastModified: lastMod });
+      setThumbs({});
+      setDoc(null);
       setPages(loaded);
       setCurrentIndex(0);
       setRemaining([]);
@@ -534,6 +546,9 @@ function Index() {
     appendLog(`Opening ${file.name}…`);
     try {
       const parsed = await extractDocText(file);
+      pages.forEach((p) => URL.revokeObjectURL(p.url));
+      setPages([]);
+      setFileLabel(null);
       setDoc({ ...parsed, translations: [] });
       setStatusText(`${parsed.blocks.length} text blocks loaded`); setStatusMode("done");
       appendLog(`Loaded ${parsed.blocks.length} text blocks from ${file.name}.`, "ok-line");
@@ -541,6 +556,7 @@ function Index() {
       appendLog(`Failed to read document: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
       setStatusText("Failed to read document"); setStatusMode("");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appendLog]);
 
   // ---- Accept archives, loose images, and PDFs (rendered to page images)
@@ -597,6 +613,9 @@ function Index() {
       if (!id) return;
       const rec = await idbGet(id);
       if (!rec) return;
+      // If the user already dropped a file (or a run started) while IDB was
+      // being read, never clobber it with the restored session.
+      if (pagesRef.current.length || runningRef.current) return;
       appendLog(`Resuming "${rec.name}" from saved session.`, "ok-line");
       await ingestArchive(rec.blob, rec.name, rec.size, rec.lastModified, rec.pages);
     })();
@@ -629,12 +648,11 @@ function Index() {
   // ---- History API: intercept back gesture to close overlays
   useEffect(() => {
     const onPop = () => {
-      if (lightboxIndex !== null) { setLightboxIndex(null); return; }
-      if (view === "single") { setView("grid"); return; }
+      if (lightboxIndex !== null) setLightboxIndex(null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [lightboxIndex, view]);
+  }, [lightboxIndex]);
 
   const openLightbox = useCallback((i: number) => {
     setCurrentIndex(i);
@@ -712,6 +730,34 @@ function Index() {
     else ctx.drawImage(p.img, 0, 0, p.w, p.h);
   }, [getComposite]);
 
+  // Build (once per page) a small composite preview for the grid. Runs off the
+  // main flow so a long book doesn't stall the UI.
+  useEffect(() => {
+    let cancelled = false;
+    const todo = pages
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => p.status === "translated" && p.regions.length > 0 && !thumbs[`${p.name}|${p.regions.length}`]);
+    if (!todo.length) return;
+    const run = async () => {
+      for (const { p } of todo.slice(0, 4)) {
+        if (cancelled) return;
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const scale = Math.min(1, 420 / Math.max(p.w, p.h));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(p.w * scale));
+        c.height = Math.max(1, Math.round(p.h * scale));
+        const cctx = c.getContext("2d");
+        if (!cctx) continue;
+        cctx.drawImage(getComposite(p), 0, 0, c.width, c.height);
+        const url = c.toDataURL("image/jpeg", 0.72);
+        if (cancelled) return;
+        setThumbs((prev) => ({ ...prev, [`${p.name}|${p.regions.length}`]: url }));
+      }
+    };
+    void run();
+    return () => { cancelled = true; };
+  }, [pages, thumbs, getComposite, redrawTick]);
+
   // Draw single-page canvas
   const singlePage = view === "single" ? pages[currentIndex] : undefined;
   useEffect(() => {
@@ -767,10 +813,20 @@ function Index() {
       if (customInstructions.trim()) fd.append("customInstructions", customInstructions);
       const res = await fetch("/api/translate", { method: "POST", body: fd });
       const text = await res.text();
-      let data: { error?: string; hasText?: boolean; regions?: Region[]; throttle?: { retryAfterMs?: number } } = {};
+      let data: {
+        error?: string; hasText?: boolean; regions?: Region[];
+        rateLimited?: boolean; retryAfterMs?: number;
+        throttle?: { retryAfterMs?: number };
+      } = {};
       try { data = JSON.parse(text) as typeof data; }
       catch {
         throw new Error(`Server returned a non-JSON response (HTTP ${res.status}). The request likely timed out — try again.`);
+      }
+      if (data.rateLimited) {
+        const e = new Error(data.error || "Rate limited") as Error & { retryAfterMs?: number };
+        e.name = "RateLimited";
+        e.retryAfterMs = data.retryAfterMs ?? 6000;
+        throw e;
       }
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
@@ -834,7 +890,8 @@ function Index() {
   }, [pages]);
 
   const translateRange = useCallback(async (indices: number[]) => {
-    if (running || !pages.length || !indices.length) return;
+    if (runningRef.current || !pagesRef.current.length || !indices.length) return;
+    runningRef.current = true;
     setRunning(true);
     pauseRef.current = false;
     setRemaining(indices.slice());
@@ -851,7 +908,7 @@ function Index() {
     let leftover = indices.slice();
     // Snapshot of current pages so we can build priorContext from earlier results
     // without going stale during the loop.
-    let snapshot = pages.slice();
+    let snapshot = pagesRef.current.slice();
     const buildPrior = (pageIdx: number) => {
       const lines: string[] = [];
       for (let k = Math.max(0, pageIdx - 1); k < pageIdx; k++) {
@@ -895,14 +952,36 @@ function Index() {
         appendLog(`Paused — ${leftover.length} page${leftover.length === 1 ? "" : "s"} remaining.`, "accent-line");
         break;
       }
-      const page = pages[i];
+      const page = pagesRef.current[i];
+      if (!page) continue;
       updatePage(i, { status: "processing" });
       try {
-        const resp = await callServer(page, "detect", buildPrior(i), {
-          pageIndex: i,
-          pageCount: pages.length,
-          sessionContext: buildSession(),
-        });
+        // Rate limits are transient: wait out the server's suggested delay and
+        // try the same page again before giving up on it.
+        let resp: Awaited<ReturnType<typeof callServer>> | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            resp = await callServer(page, "detect", buildPrior(i), {
+              pageIndex: i,
+              pageCount: pagesRef.current.length,
+              sessionContext: buildSession(),
+            });
+            break;
+          } catch (e) {
+            const rl = e as Error & { retryAfterMs?: number };
+            if (rl.name !== "RateLimited" || attempt === 2 || pauseRef.current) throw e;
+            const wait = Math.min(20000, rl.retryAfterMs ?? 6000);
+            const next = Math.min(15000, Math.max(pacingRef.current * 1.5, wait));
+            setPacingMs(next);
+            successSinceHitRef.current = 0;
+            appendLog(
+              `Page ${i + 1}: service busy — waiting ${(wait / 1000).toFixed(1)}s and retrying (pacing now ${(next / 1000).toFixed(1)}s/page).`,
+              "accent-line",
+            );
+            await bgSleep(wait);
+          }
+        }
+        if (!resp) throw new Error("No response from the translation service.");
         const safe = sanitizeRegions(resp.regions || [], page.w, page.h);
         for (const r of safe) {
           if (!r.speaker) continue;
@@ -944,7 +1023,7 @@ function Index() {
         const msg = err instanceof Error ? err.message : String(err);
         updatePage(i, { status: "pending" });
         appendLog(`Page ${i + 1}: ${msg}`, "accent-line");
-        if (/rate|429|timed out|timeout|non-JSON/i.test(msg)) {
+        if (/rate limit|rate-limit|429|timed out|timeout|non-JSON|credits/i.test(msg)) {
           // Bump pacing AND auto-pause
           const next = Math.min(15000, pacingRef.current * 2);
           setPacingMs(next);
@@ -962,6 +1041,7 @@ function Index() {
     }
 
     const wasPaused = pauseRef.current;
+    runningRef.current = false;
     setRunning(false);
     if (wasPaused) {
       setRemaining(leftover);
@@ -975,19 +1055,23 @@ function Index() {
       appendLog("Done.", "ok-line");
     }
     pauseRef.current = false;
-  }, [pages, running, skipBlank, callServer, appendLog]);
+  }, [skipBlank, callServer, appendLog]);
 
   const runTranslation = useCallback(
-    () => translateRange(pages.map((_, i) => i).filter((i) => pages[i].status !== "translated")),
-    [translateRange, pages],
+    () => translateRange(
+      pagesRef.current.map((_, i) => i).filter((i) => pagesRef.current[i].status !== "translated"),
+    ),
+    [translateRange],
   );
   const rerunAll = useCallback(() => {
-    if (running || !pages.length) return;
+    if (runningRef.current || !pages.length) return;
     if (!confirm("Re-translate every page from scratch? This replaces existing translations.")) return;
-    setPages((prev) => prev.map((p) => ({ ...p, status: "pending" as PageStatus, regions: [] })));
-    // Slight delay so the state flush lands before translateRange snapshots pages.
-    setTimeout(() => translateRange(pages.map((_, i) => i)), 50);
-  }, [running, pages, translateRange]);
+    compositeCache.current.clear();
+    const cleared = pagesRef.current.map((p) => ({ ...p, status: "pending" as PageStatus, regions: [] }));
+    pagesRef.current = cleared;
+    setPages(cleared);
+    void translateRange(cleared.map((_, i) => i));
+  }, [pages.length, translateRange]);
   const resumeTranslation = useCallback(
     () => translateRange(remaining),
     [translateRange, remaining],
@@ -1015,16 +1099,15 @@ function Index() {
 
   // Throw away this page's translation and scan it again from scratch.
   const regeneratePage = useCallback((i: number) => {
-    if (running || !pages[i]) return;
+    if (runningRef.current || !pagesRef.current[i]) return;
     compositeCache.current.clear();
-    setPages((prev) => {
-      const next = prev.slice();
-      next[i] = { ...next[i], status: "pending" as PageStatus, regions: [] };
-      return next;
-    });
+    const next = pagesRef.current.slice();
+    next[i] = { ...next[i], status: "pending" as PageStatus, regions: [] };
+    pagesRef.current = next;
+    setPages(next);
     setRedrawTick((t) => t + 1);
-    setTimeout(() => translateRange([i]), 50);
-  }, [running, pages, translateRange]);
+    void translateRange([i]);
+  }, [translateRange]);
 
   const clearSaved = useCallback(async () => {
     if (!fileLabel) return;
@@ -1220,7 +1303,7 @@ function Index() {
               desc="The model is instructed to locate and describe only bounding boxes that contain typeset or hand‑lettered text. It does not describe character art, backgrounds, or panel composition."
               checked={textOnly} onChange={setTextOnly} />
             <ToggleRow title="Skip text‑free pages"
-              desc="A fast low‑resolution pre‑check flags pages with no visible text so they're copied through untouched — no full‑resolution analysis needed."
+              desc="Pages that come back with no readable text are marked as such and copied through untouched instead of being overlaid."
               checked={skipBlank} onChange={setSkipBlank} />
             <ToggleRow title="Don't flag strong language"
               desc="Translate slang, insults, and crude dialogue plainly and in‑register. The tool won't soften lines or mark a page as mature just because characters curse."
@@ -1381,7 +1464,12 @@ function Index() {
                     onClick={() => openLightbox(i)}
                     onKeyDown={(e) => { if (e.key === "Enter") openLightbox(i); }}
                   >
-                    <img src={p.url} loading="lazy" decoding="async" alt={`Page ${i + 1}`} />
+                    <img
+                      src={(p.status === "translated" && thumbs[`${p.name}|${p.regions.length}`]) || p.url}
+                      loading="lazy"
+                      decoding="async"
+                      alt={`Page ${i + 1}`}
+                    />
                     <span className="num">#{String(i + 1).padStart(3, "0")}</span>
                     <span className={`badge ${p.status}`}>{badgeLabel(p.status)}</span>
                   </div>
@@ -1611,7 +1699,7 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
 .page-card { background: var(--panel); border-radius: 4px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: border-color .15s, transform .1s; position: relative; }
 .page-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.page-card img { width: 100%; content-visibility: auto; contain-intrinsic-size: 300px 450px; display: block; aspect-ratio: 2/3; object-fit: cover; background: var(--paper); }
+.page-card img { width: 100%; content-visibility: auto; contain-intrinsic-size: 300px 450px; display: block; aspect-ratio: 2/3; object-fit: contain; background: var(--paper); }
 .page-card .num { position: absolute; top: 6px; left: 6px; background: var(--ink); color: var(--paper); font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border-radius: 3px; }
 .page-card .badge { position: absolute; top: 6px; right: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border-radius: 3px; color: var(--paper); }
 .badge.translated { background: var(--ok); }
@@ -1622,8 +1710,8 @@ button { font-family: inherit; cursor: pointer; border: none; border-radius: 4px
 .single-page-nav { display: flex; align-items: center; gap: 14px; font-family: 'JetBrains Mono', monospace; font-size: 13px; }
 .single-page-nav button { background: var(--ink); color: var(--paper); width: 34px; height: 34px; font-size: 16px; border-radius: 4px; }
 .single-page-nav button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
-.canvas-wrap { position: relative; max-width: 100%; box-shadow: 0 4px 24px rgba(26,26,31,0.15); line-height: 0; cursor: zoom-in; }
-.canvas-wrap canvas { width: 100%; height: auto; max-height: 78vh; display: block; object-fit: contain; }
+.canvas-wrap { position: relative; max-width: 100%; display: flex; justify-content: center; box-shadow: 0 4px 24px rgba(26,26,31,0.15); line-height: 0; cursor: zoom-in; }
+.canvas-wrap canvas { max-width: 100%; max-height: 78vh; width: auto; height: auto; display: block; }
 .compare-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
 
 /* Sheet backdrop — hidden on desktop, visible on mobile under the sheet */
