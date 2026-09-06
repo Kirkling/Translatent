@@ -400,6 +400,8 @@ function Index() {
   const lightboxCanvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const pauseRef = useRef(false);
+  const pagesRef = useRef<Page[]>([]);
+  const runningRef = useRef(false);
   const pacingRef = useRef(2500);
   const successSinceHitRef = useRef(0);
 
@@ -408,6 +410,11 @@ function Index() {
   }, []);
 
   useEffect(() => { pacingRef.current = pacingMs; }, [pacingMs]);
+  // Mirrors of state the translation loop needs to read *now* rather than from
+  // the closure it was created with — this is what keeps queued actions
+  // (regenerate, re-run, resume) from working off a stale page list.
+  useEffect(() => { pagesRef.current = pages; }, [pages]);
+  useEffect(() => { runningRef.current = running; }, [running]);
 
   // Make sure the hand-lettered / brush faces are rasterizable on canvas
   // before any overlay is drawn, otherwise they silently fall back.
@@ -505,6 +512,7 @@ function Index() {
         }
       }
       const id = fileId({ name, size, lastModified: lastMod });
+      setDoc(null);
       setPages(loaded);
       setCurrentIndex(0);
       setRemaining([]);
@@ -534,6 +542,9 @@ function Index() {
     appendLog(`Opening ${file.name}…`);
     try {
       const parsed = await extractDocText(file);
+      pages.forEach((p) => URL.revokeObjectURL(p.url));
+      setPages([]);
+      setFileLabel(null);
       setDoc({ ...parsed, translations: [] });
       setStatusText(`${parsed.blocks.length} text blocks loaded`); setStatusMode("done");
       appendLog(`Loaded ${parsed.blocks.length} text blocks from ${file.name}.`, "ok-line");
@@ -541,6 +552,7 @@ function Index() {
       appendLog(`Failed to read document: ${err instanceof Error ? err.message : String(err)}`, "accent-line");
       setStatusText("Failed to read document"); setStatusMode("");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appendLog]);
 
   // ---- Accept archives, loose images, and PDFs (rendered to page images)
@@ -597,6 +609,9 @@ function Index() {
       if (!id) return;
       const rec = await idbGet(id);
       if (!rec) return;
+      // If the user already dropped a file (or a run started) while IDB was
+      // being read, never clobber it with the restored session.
+      if (pagesRef.current.length || runningRef.current) return;
       appendLog(`Resuming "${rec.name}" from saved session.`, "ok-line");
       await ingestArchive(rec.blob, rec.name, rec.size, rec.lastModified, rec.pages);
     })();
@@ -629,12 +644,11 @@ function Index() {
   // ---- History API: intercept back gesture to close overlays
   useEffect(() => {
     const onPop = () => {
-      if (lightboxIndex !== null) { setLightboxIndex(null); return; }
-      if (view === "single") { setView("grid"); return; }
+      if (lightboxIndex !== null) setLightboxIndex(null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [lightboxIndex, view]);
+  }, [lightboxIndex]);
 
   const openLightbox = useCallback((i: number) => {
     setCurrentIndex(i);
@@ -767,10 +781,20 @@ function Index() {
       if (customInstructions.trim()) fd.append("customInstructions", customInstructions);
       const res = await fetch("/api/translate", { method: "POST", body: fd });
       const text = await res.text();
-      let data: { error?: string; hasText?: boolean; regions?: Region[]; throttle?: { retryAfterMs?: number } } = {};
+      let data: {
+        error?: string; hasText?: boolean; regions?: Region[];
+        rateLimited?: boolean; retryAfterMs?: number;
+        throttle?: { retryAfterMs?: number };
+      } = {};
       try { data = JSON.parse(text) as typeof data; }
       catch {
         throw new Error(`Server returned a non-JSON response (HTTP ${res.status}). The request likely timed out — try again.`);
+      }
+      if (data.rateLimited) {
+        const e = new Error(data.error || "Rate limited") as Error & { retryAfterMs?: number };
+        e.name = "RateLimited";
+        e.retryAfterMs = data.retryAfterMs ?? 6000;
+        throw e;
       }
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
@@ -1220,7 +1244,7 @@ function Index() {
               desc="The model is instructed to locate and describe only bounding boxes that contain typeset or hand‑lettered text. It does not describe character art, backgrounds, or panel composition."
               checked={textOnly} onChange={setTextOnly} />
             <ToggleRow title="Skip text‑free pages"
-              desc="A fast low‑resolution pre‑check flags pages with no visible text so they're copied through untouched — no full‑resolution analysis needed."
+              desc="Pages that come back with no readable text are marked as such and copied through untouched instead of being overlaid."
               checked={skipBlank} onChange={setSkipBlank} />
             <ToggleRow title="Don't flag strong language"
               desc="Translate slang, insults, and crude dialogue plainly and in‑register. The tool won't soften lines or mark a page as mature just because characters curse."
