@@ -858,7 +858,8 @@ function Index() {
   }, [pages]);
 
   const translateRange = useCallback(async (indices: number[]) => {
-    if (running || !pages.length || !indices.length) return;
+    if (runningRef.current || !pagesRef.current.length || !indices.length) return;
+    runningRef.current = true;
     setRunning(true);
     pauseRef.current = false;
     setRemaining(indices.slice());
@@ -875,7 +876,7 @@ function Index() {
     let leftover = indices.slice();
     // Snapshot of current pages so we can build priorContext from earlier results
     // without going stale during the loop.
-    let snapshot = pages.slice();
+    let snapshot = pagesRef.current.slice();
     const buildPrior = (pageIdx: number) => {
       const lines: string[] = [];
       for (let k = Math.max(0, pageIdx - 1); k < pageIdx; k++) {
@@ -919,14 +920,36 @@ function Index() {
         appendLog(`Paused — ${leftover.length} page${leftover.length === 1 ? "" : "s"} remaining.`, "accent-line");
         break;
       }
-      const page = pages[i];
+      const page = pagesRef.current[i];
+      if (!page) continue;
       updatePage(i, { status: "processing" });
       try {
-        const resp = await callServer(page, "detect", buildPrior(i), {
-          pageIndex: i,
-          pageCount: pages.length,
-          sessionContext: buildSession(),
-        });
+        // Rate limits are transient: wait out the server's suggested delay and
+        // try the same page again before giving up on it.
+        let resp: Awaited<ReturnType<typeof callServer>> | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            resp = await callServer(page, "detect", buildPrior(i), {
+              pageIndex: i,
+              pageCount: pagesRef.current.length,
+              sessionContext: buildSession(),
+            });
+            break;
+          } catch (e) {
+            const rl = e as Error & { retryAfterMs?: number };
+            if (rl.name !== "RateLimited" || attempt === 2 || pauseRef.current) throw e;
+            const wait = Math.min(20000, rl.retryAfterMs ?? 6000);
+            const next = Math.min(15000, Math.max(pacingRef.current * 1.5, wait));
+            setPacingMs(next);
+            successSinceHitRef.current = 0;
+            appendLog(
+              `Page ${i + 1}: service busy — waiting ${(wait / 1000).toFixed(1)}s and retrying (pacing now ${(next / 1000).toFixed(1)}s/page).`,
+              "accent-line",
+            );
+            await bgSleep(wait);
+          }
+        }
+        if (!resp) throw new Error("No response from the translation service.");
         const safe = sanitizeRegions(resp.regions || [], page.w, page.h);
         for (const r of safe) {
           if (!r.speaker) continue;
@@ -968,7 +991,7 @@ function Index() {
         const msg = err instanceof Error ? err.message : String(err);
         updatePage(i, { status: "pending" });
         appendLog(`Page ${i + 1}: ${msg}`, "accent-line");
-        if (/rate|429|timed out|timeout|non-JSON/i.test(msg)) {
+        if (/rate limit|rate-limit|429|timed out|timeout|non-JSON|credits/i.test(msg)) {
           // Bump pacing AND auto-pause
           const next = Math.min(15000, pacingRef.current * 2);
           setPacingMs(next);
@@ -986,6 +1009,7 @@ function Index() {
     }
 
     const wasPaused = pauseRef.current;
+    runningRef.current = false;
     setRunning(false);
     if (wasPaused) {
       setRemaining(leftover);
@@ -999,19 +1023,23 @@ function Index() {
       appendLog("Done.", "ok-line");
     }
     pauseRef.current = false;
-  }, [pages, running, skipBlank, callServer, appendLog]);
+  }, [skipBlank, callServer, appendLog]);
 
   const runTranslation = useCallback(
-    () => translateRange(pages.map((_, i) => i).filter((i) => pages[i].status !== "translated")),
-    [translateRange, pages],
+    () => translateRange(
+      pagesRef.current.map((_, i) => i).filter((i) => pagesRef.current[i].status !== "translated"),
+    ),
+    [translateRange],
   );
   const rerunAll = useCallback(() => {
-    if (running || !pages.length) return;
+    if (runningRef.current || !pages.length) return;
     if (!confirm("Re-translate every page from scratch? This replaces existing translations.")) return;
-    setPages((prev) => prev.map((p) => ({ ...p, status: "pending" as PageStatus, regions: [] })));
-    // Slight delay so the state flush lands before translateRange snapshots pages.
-    setTimeout(() => translateRange(pages.map((_, i) => i)), 50);
-  }, [running, pages, translateRange]);
+    compositeCache.current.clear();
+    const cleared = pagesRef.current.map((p) => ({ ...p, status: "pending" as PageStatus, regions: [] }));
+    pagesRef.current = cleared;
+    setPages(cleared);
+    void translateRange(cleared.map((_, i) => i));
+  }, [pages.length, translateRange]);
   const resumeTranslation = useCallback(
     () => translateRange(remaining),
     [translateRange, remaining],
@@ -1039,16 +1067,15 @@ function Index() {
 
   // Throw away this page's translation and scan it again from scratch.
   const regeneratePage = useCallback((i: number) => {
-    if (running || !pages[i]) return;
+    if (runningRef.current || !pagesRef.current[i]) return;
     compositeCache.current.clear();
-    setPages((prev) => {
-      const next = prev.slice();
-      next[i] = { ...next[i], status: "pending" as PageStatus, regions: [] };
-      return next;
-    });
+    const next = pagesRef.current.slice();
+    next[i] = { ...next[i], status: "pending" as PageStatus, regions: [] };
+    pagesRef.current = next;
+    setPages(next);
     setRedrawTick((t) => t + 1);
-    setTimeout(() => translateRange([i]), 50);
-  }, [running, pages, translateRange]);
+    void translateRange([i]);
+  }, [translateRange]);
 
   const clearSaved = useCallback(async () => {
     if (!fileLabel) return;
