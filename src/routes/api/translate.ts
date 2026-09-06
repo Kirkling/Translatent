@@ -14,10 +14,22 @@ function json(body: unknown, status = 200) {
   });
 }
 
+class RateLimited extends Error {
+  retryAfterMs: number;
+  constructor(retryAfterMs: number) {
+    super("Rate limited by the AI service — waiting before the next attempt.");
+    this.name = "RateLimited";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 async function callGateway(messages: unknown[]) {
   const key = process.env.LOVABLE_API_KEY;
   if (!key) throw new Error("LOVABLE_API_KEY missing");
-  const maxAttempts = 5;
+  // Keep the in-request retry budget small: a Worker request that sits in a long
+  // backoff loop gets cut off and the client sees an HTML error page instead of
+  // JSON. Two quick tries, then hand the wait back to the client.
+  const maxAttempts = 2;
   let lastErr = "";
   let suggestedDelayMs = 0;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -28,7 +40,7 @@ async function callGateway(messages: unknown[]) {
         "Lovable-API-Key": key,
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "google/gemini-3.7-flash",
         messages,
         temperature: 0,
         top_p: 0.1,
@@ -47,19 +59,19 @@ async function callGateway(messages: unknown[]) {
     if (res.status === 402) throw new Error("AI credits exhausted for this workspace.");
     if (res.status === 429 || res.status === 503) {
       const retryAfter = Number(res.headers.get("retry-after"));
-      const capped = Number.isFinite(retryAfter) && retryAfter > 0
-        ? Math.min(retryAfter, 8) * 1000
-        : 1000 * Math.pow(2, attempt);
-      const base = Math.min(capped, 8000);
-      const jitter = Math.floor(Math.random() * 500);
-      // Tell the client to slow down its inter-page pacing on a hit.
-      suggestedDelayMs = Math.max(suggestedDelayMs, base + 1000);
-      await new Promise((r) => setTimeout(r, base + jitter));
+      const base = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter, 5) * 1000
+        : 1500 * (attempt + 1);
+      suggestedDelayMs = Math.max(suggestedDelayMs, base + 1500);
+      if (attempt === maxAttempts - 1) {
+        throw new RateLimited(suggestedDelayMs);
+      }
+      await new Promise((r) => setTimeout(r, base + Math.floor(Math.random() * 400)));
       continue;
     }
     throw new Error(`AI gateway error ${lastErr}`);
   }
-  throw new Error(`Rate limited after retries — try again in a minute. (${lastErr})`);
+  throw new RateLimited(suggestedDelayMs || 5000);
 }
 
 function clampHex(v: unknown, fallback: string) {
@@ -312,7 +324,12 @@ export const Route = createFileRoute("/api/translate")({
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           // Return 200 with an error field so the client can show the message
-          // without tripping the global runtime-error boundary.
+          // without tripping the global runtime-error boundary. Rate limits are
+          // flagged explicitly so the client can wait and retry the same page
+          // instead of treating it as a hard failure.
+          if (err instanceof RateLimited) {
+            return json({ error: msg, rateLimited: true, retryAfterMs: err.retryAfterMs }, 200);
+          }
           return json({ error: msg }, 200);
         }
       },
